@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+ENV/
+bin/
+build/
+develop-eggs/
+dist/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.ruff_cache/
+.mypy_cache/
+
+# Databases & Logs
+*.db
+*.sqlite
+logs/
+--db
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+
+# AI / Models
+*.gguf
+*.ckpt
+*.pt
+*.bin
+*.model
+*.onnx
+
+# Project Specific
+demosite/
+outputs/
+agent_traces.db
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+.project
+.settings/
+*.sublime-*
+
+# Web CLI (Node.js)
+web-cli/node_modules/
+web-cli/dist/
+web-cli/npm-debug.log*
+web-cli/yarn-debug.log*
+web-cli/yarn-error.log*
+web-cli/.venv/

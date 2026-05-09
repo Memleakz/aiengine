@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent Interface</title>
+    <link rel="stylesheet" href="./style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/catppuccin-mocha.min.css">
+</head>
+<body class="app-body">
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header" role="banner">
+            <div class="header-left">
+                <span id="connection-status-dot" class="status-dot status-connecting"></span>
+                <span id="connection-status-text" class="status-text">Connecting...</span>
+            </div>
+            <h1 class="header-title">AI Agent Interface</h1>
+            <div class="header-right">
+                <button id="flow-button" class="header-button" aria-label="Open flow configuration">
+                    <svg class="flow-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 6h16M4 12h16M4 18h7"/>
+                        <path d="M13 18l3-3 3 3-3 3-3-3z"/>
+                    </svg>
+                    Flow
+                </button>
+                <button id="settings-button" class="header-button" aria-label="Open settings">
+                    <svg class="settings-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Stats Bar -->
+        <div class="stats-bar" id="stats-bar">
+            <div class="stat-group">
+                <span class="group-label">Last Turn:</span>
+                <div class="stat-item" title="Input tokens (Prompt + History)">
+                    <span class="stat-label">IN:</span>
+                    <span id="turn-in" class="stat-value">0</span>
+                </div>
+                <div class="stat-item" title="Output tokens (Model response)">
+                    <span class="stat-label">OUT:</span>
+                    <span id="turn-out" class="stat-value">0</span>
+                </div>
+                <div class="stat-item" title="Reasoning tokens (Thinking process)">
+                    <span class="stat-label">THINK:</span>
+                    <span id="turn-think" class="stat-value">0</span>
+                </div>
+                <div class="stat-item" title="Total tokens for this turn">
+                    <span class="stat-label">SUM:</span>
+                    <span id="turn-total" class="stat-value">0</span>
+                </div>
+            </div>
+            
+            <div class="divider"></div>
+            
+            <div class="stat-group">
+                <span class="group-label">Session:</span>
+                <div class="stat-item" title="Total input tokens in this session">
+                    <span class="stat-label">IN:</span>
+                    <span id="session-in" class="stat-value">0</span>
+                </div>
+                <div class="stat-item" title="Total output tokens in this session">
+                    <span class="stat-label">OUT:</span>
+                    <span id="session-out" class="stat-value">0</span>
+                </div>
+                <div class="stat-item" title="Total reasoning tokens in this session">
+                    <span class="stat-label">THINK:</span>
+                    <span id="session-think" class="stat-value">0</span>
+                </div>
+                <div class="stat-item" title="Total tokens in this session">
+                    <span class="stat-label">SUM:</span>
+                    <span id="session-total" class="stat-value">0</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Flow Stepper Visualization -->
+        <div id="flow-stepper" class="flow-stepper hidden">
+            <div id="flow-stepper-content" class="flow-stepper-content"></div>
+        </div>
+
+        <!-- Message Feed -->
+        <main id="message-feed" class="message-feed" role="list" aria-label="Conversation">
+            <!-- Messages will be added here dynamically -->
+        </main>
+
+        <!-- Input Area -->
+        <footer class="input-area" role="contentinfo">
+            <div class="input-container">
+                <textarea
+                    id="user-input"
+                    placeholder="Type your command..."
+                    class="input-textarea"
+                    rows="1"
+                    aria-label="Command input"
+                ></textarea>
+                <button
+                    id="send-button"
+                    class="send-button"
+                    aria-label="Send command"
+                >
+                    <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 19V5M5 12l7-7 7 7"/>
+                    </svg>
+                </button>
+                <button
+                    id="stop-button"
+                    class="send-button hidden"
+                    aria-label="Stop agent"
+                    style="background-color: var(--color-red);"
+                >
+                    <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="6" y="6" width="12" height="12"></rect>
+                    </svg>
+                </button>
+            </div>
+            <div class="input-hint">Enter to send · Shift+Enter for new line</div>
+        </footer>
+
+        <!-- Footer Status Bar -->
+        <div class="footer-status">
+            <div class="status-item">
+                <span class="status-icon">📁</span>
+                <span id="current-workdir" class="status-value">Not set</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <p class="loading-text">Connecting to agent...</p>
+    </div>
+    
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content">
+            <header class="modal-header">
+                <h2>Engine Settings</h2>
+                <button id="close-settings" class="close-button" aria-label="Close settings">&times;</button>
+            </header>
+            <form id="settings-form" class="settings-form">
+                <div class="form-group">
+                    <label for="setting-workdir">Working Directory</label>
+                    <input type="text" id="setting-workdir" placeholder="/path/to/project">
+                </div>
+                <div class="form-group">
+                    <label for="setting-system-prompt">System Prompt</label>
+                    <textarea id="setting-system-prompt" rows="4" placeholder="You are a helpful AI assistant..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="setting-temperature">Temperature (0.0 - 1.0)</label>
+                    <input type="number" id="setting-temperature" step="0.1" min="0" max="2" value="0.7">
+                </div>
+                <div class="form-group">
+                    <label for="setting-top-p">Top P</label>
+                    <input type="number" id="setting-top-p" step="0.05" min="0" max="1" value="1.0">
+                </div>
+                <div class="form-group">
+                    <label for="setting-max-tokens">Max Output Tokens</label>
+                    <input type="number" id="setting-max-tokens" step="1024" min="1" value="4096">
+                </div>
+                <div class="form-group checkbox-group">
+                    <label class="checkbox-label" for="setting-show-debug">
+                        <input type="checkbox" id="setting-show-debug">
+                        Show Debug Messages
+                    </label>
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" class="save-button">Apply Settings</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Agent Flow Modal -->
+    <div id="flow-modal" class="modal">
+        <div class="modal-content flow-content">
+            <header class="modal-header">
+                <h2>Agent Flow Configuration</h2>
+                <button id="close-flow" class="close-button" aria-label="Close flow config">&times;</button>
+            </header>
+            <div class="flow-body">
+                <p>Define a sequence of agents. Each agent runs with a fresh context and receives the accumulated output of previous agents.</p>
+                
+                <div class="flow-toolbar" style="display: flex; gap: 8px; margin-bottom: 16px;">
+                    <select id="saved-flows-select" class="input-textarea" style="flex: 1; padding: 4px 8px; min-height: 32px; border-radius: var(--radius-md);">
+                        <option value="">-- Load Saved Flow --</option>
+                    </select>
+                    <button id="save-flow-btn" class="secondary-button" style="width: auto; padding: 4px 12px;" type="button">Save Flow</button>
+                    <button id="delete-flow-btn" class="secondary-button" style="width: auto; padding: 4px 12px; color: var(--color-red); border-color: var(--color-red);" type="button">Delete</button>
+                </div>
+                
+                <div class="form-group">
+                    <label for="flow-initial-prompt">Initial Task Request</label>
+                    <textarea id="flow-initial-prompt" rows="3" placeholder="Describe the overall task to be accomplished..."></textarea>
+                </div>
+                
+                <div class="flow-agents-container">
+                    <h3>Pipeline Steps</h3>
+                    <div id="flow-agents-list" class="flow-agents-list">
+                        <!-- Agent configs injected here -->
+                    </div>
+                    <button id="add-agent-button" class="secondary-button" type="button">+ Add Agent Step</button>
+                </div>
+
+                <div class="modal-footer">
+                    <button id="start-flow-button" class="save-button">🚀 Start Flow</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Login Modal -->
+    <div id="login-modal" class="modal">
+        <div class="modal-content login-content">
+            <header class="modal-header">
+                <h2>Authentication Required</h2>
+            </header>
+            <div class="login-body">
+                <p>Please enter the admin password to access the AI Agent.</p>
+                <form id="login-form" class="settings-form">
+                    <div class="form-group">
+                        <label for="login-password">Password</label>
+                        <input type="password" id="login-password" placeholder="Enter super secret password" required>
+                    </div>
+                    <div id="login-error" class="error-text hidden">Invalid password. Please try again.</div>
+                    <div class="modal-footer">
+                        <button type="submit" class="save-button">Login</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+</body>
+</html>

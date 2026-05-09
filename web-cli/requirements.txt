@@ -1,0 +1,6 @@
+fastapi[standard]
+uvicorn[standard]
+python-dotenv
+itsdangerous
+openai>=2.33.0
+mcp>=1.27.0

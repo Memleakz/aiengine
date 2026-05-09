@@ -1,0 +1,20 @@
+{
+  "name": "aiengine-web-cli",
+  "version": "1.0.0",
+  "description": "Web-based CLI interface for AI Engine",
+  "main": "src/frontend/main.ts",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "marked": "^12.0.0",
+    "highlight.js": "^11.9.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0",
+    "typescript": "^5.0.0",
+    "tailwindcss": "^3.4.0"
+  }
+}

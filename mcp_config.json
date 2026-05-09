@@ -1,0 +1,39 @@
+{
+  "mcp_servers": {
+    "sqlite": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-sqlite",
+        "--db",
+        "./my_database.db"
+      ],
+      "enabled": true
+    },
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "enabled": false
+    },
+    "local_filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "./my_project_dir"
+      ],
+      "enabled": false
+    },
+    "tree-sitter": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "/home/tobias/dev/Repo/aiengine/src/web-cli/.venv/bin/mcp-server-tree-sitter | grep --line-buffered -E '^\\{'"
+      ],
+      "enabled": false
+    }
+  }
+}
