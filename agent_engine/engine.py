@@ -48,8 +48,10 @@ class LightweightEngine:
         allowed_tools: list[str] = None,
         workdir: str | None = None,
         system_prompt: str | None = "You are a helpful AI coding assistant.",
+        load_local_instructions: bool = True,
         extra_completion_kwargs: dict | None = None,
         max_retries: int = 3,
+        max_reasoning_tokens: int = 8192,
         debug: bool | None = None,
     ) -> None:
         self.model = model or os.getenv("AGENT_MODEL", "gpt-4o")
@@ -57,6 +59,8 @@ class LightweightEngine:
         self.history = []
         self.max_history_length = max_history_length
         self.max_iterations = max_iterations
+        self.max_reasoning_tokens = max_reasoning_tokens
+        self.load_local_instructions = load_local_instructions
         if workdir:
             self.workdir = os.path.abspath(workdir)
         else:
@@ -91,19 +95,27 @@ class LightweightEngine:
             _native_ctx = self._query_ollama_context(_ollama_host, self.model)
             _use_ctx = min(_native_ctx, 32768)
             self.extra_completion_kwargs.setdefault("max_tokens", _use_ctx)
+            
+            # OpenAI compatibility layer uses options.num_ctx for native Ollama context window size
+            existing_body = self.extra_completion_kwargs.get("extra_body", {})
+            if "options" not in existing_body:
+                existing_body["options"] = {}
+            existing_body["options"]["num_ctx"] = _use_ctx
+            self.extra_completion_kwargs["extra_body"] = existing_body
 
         resolved_key = (
             api_key
             or os.getenv("OPENROUTER_API_KEY")
             or os.getenv("OPENAI_API_KEY")
         )
-        if not resolved_key:
-            raise ValueError(
-                "No API key provided. Set OPENROUTER_API_KEY or OPENAI_API_KEY "
-                "environment variable, or pass api_key= explicitly."
-            )
-
         resolved_base_url = base_url or os.getenv("AGENT_BASE_URL")
+
+        if not resolved_key:
+            # Fallback for local execution (e.g. Ollama)
+            resolved_key = "dummy-ollama-key"
+            if not resolved_base_url:
+                resolved_base_url = "http://127.0.0.1:11434/v1"
+
         self.client = AsyncOpenAI(
             api_key=resolved_key,
             base_url=resolved_base_url,
@@ -125,7 +137,9 @@ class LightweightEngine:
                 "read_file": self.builtin_tools.read_file,
                 "file_write": self.builtin_tools.file_write,
                 "file_edit": self.builtin_tools.file_edit,
+                "patch_code_range": self.builtin_tools.patch_code_range,
                 "file_delete": self.builtin_tools.file_delete,
+
                 "directory_create": self.builtin_tools.directory_create,
                 "glob_search": self.builtin_tools.glob_search,
                 "grep_search": self.builtin_tools.grep_search,
@@ -294,6 +308,10 @@ class LightweightEngine:
         """Combine base system prompt with local agent instructions if they exist."""
         prompt = self.system_prompt or ""
         diagnostics = []
+
+        if not self.load_local_instructions:
+            diagnostics.append("Automatic loading of local instructions (agent.md) is disabled.")
+            return (prompt if prompt else None), diagnostics
         
         # Look for agent instructions in workdir and CWD
         # Support multiple filenames: agents.md, agent.md, AGENTS.md
@@ -480,24 +498,36 @@ class LightweightEngine:
 
     async def connect_mcp(self, command: str, args: list[str]) -> None:
         manager = MCPServerManager(command, args)
-        session = await manager.connect()
-        result = await session.list_tools()
-        for tool in result.tools:
-            self.tools.register_mcp_tool(tool, session, workdir_getter=lambda: self.workdir)
-        self._mcp_managers.append(manager)
+        try:
+            session = await manager.connect()
+            result = await session.list_tools()
+            for tool in result.tools:
+                self.tools.register_mcp_tool(tool, session, workdir_getter=lambda: self.workdir)
+            self._mcp_managers.append(manager)
+        except Exception:
+            # If initialization fails (e.g., server crashes or times out), we MUST
+            # cleanly disconnect to prevent the AsyncExitStack from being garbage
+            # collected while active. GC'ing an active anyio task group will cause
+            # a catastrophic 'Attempted to exit cancel scope in a different task' crash.
+            await manager.disconnect()
+            raise
+
 
     async def close(self) -> None:
         self._is_running = False
-        for manager in self._mcp_managers:
+        managers = list(self._mcp_managers)
+        self._mcp_managers.clear()
+        for manager in reversed(managers):
+            # We explicitly reverse the shutdown order (LIFO) because AnyIO relies
+            # on strict cancel-scope nesting. If we shut down in FIFO order, the
+            # inner scopes would be disconnected out of order, raising exceptions
+            # and leaking task cancellations into the event loop.
             try:
                 await manager.disconnect()
-            except (RuntimeError, asyncio.CancelledError):
-                # Ignore "Attempted to exit cancel scope in a different task" 
-                # which can happen during rapid shutdown/cancellation
+            except BaseException:
                 pass
-            except Exception as e:
-                print(f"Error during MCP disconnect: {e}")
-        self._mcp_managers.clear()
+
+
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -509,13 +539,20 @@ class LightweightEngine:
 
     async def _execute_tool(self, name: str, args: dict, timeout: int = 30) -> tuple[str, bool]:
         """Execute a tool with timeout and output capping, returning (result_string, is_truncated)."""
+        # Hard cap for storage in message history — keeps context tokens low.
+        # read_file gets a generous cap; bash/search tools get a tighter one.
+        _HISTORY_CAP = 16_000
+        _VERBOSE_TOOLS = {"read_file", "web_fetch", "get_ast", "get_symbols", "run_query", "analyze_project"}  # tools that intentionally produce long output
         is_truncated = False
         try:
             result = await asyncio.wait_for(self.tools.dispatch(name, args), timeout=timeout)
-            if isinstance(result, str) and len(result) > 50000:
+            result_str = str(result)
+            cap = 100_000 if name in _VERBOSE_TOOLS else _HISTORY_CAP
+            if len(result_str) > cap:
                 is_truncated = True
-                result = result[:50000] + "\n\n[ERROR: Tool output truncated at 50,000 characters]"
-            return str(result), is_truncated
+                result_str = result_str[:cap] + f"\n\n[Output truncated at {cap:,} chars — use targeted queries to get more]"
+            return result_str, is_truncated
+
         except TimeoutError:
             return f"Error: Tool '{name}' timed out after {timeout}s.", False
         except Exception as e:
@@ -601,8 +638,18 @@ class LightweightEngine:
                     import openai
                     is_retryable = isinstance(e, (openai.RateLimitError, openai.InternalServerError, openai.APIStatusError))
                     # APIStatusError is retryable if code is 503 or 502
-                    if isinstance(e, openai.APIStatusError) and e.status_code not in (502, 503):
-                        is_retryable = False
+                    if isinstance(e, openai.APIStatusError):
+                        if e.status_code == 400 and "does not support tools" in str(e).lower():
+                            msg = f"Model '{self.model}' does not support tool calling."
+                            if "ollama" in str(self.client.base_url).lower():
+                                msg += f" (Hint: Try 'ollama pull {self.model}' to ensure you have the latest version with tool support, or update Ollama to 0.3.0+)"
+                            ev = AgentEvent(type="system", data=f"{msg} Retrying without tools...")
+                            self._broadcast(ev)
+                            yield ev
+                            create_kwargs["tools"] = NOT_GIVEN
+                            continue
+                        elif e.status_code not in (502, 503):
+                            is_retryable = False
 
                     if is_retryable and attempt < self.max_retries:
                         delay = (2 ** attempt) + 1
@@ -629,6 +676,7 @@ class LightweightEngine:
             in_think_block = False
 
             stream_buffer = ""
+            local_reasoning_chars = 0
             async for chunk in stream:
                 if not self._is_running:
                     break
@@ -658,6 +706,7 @@ class LightweightEngine:
                     getattr(delta, "thought", None)
                 )
                 if reasoning:
+                    local_reasoning_chars += len(reasoning)
                     ev = AgentEvent(type="thinking", data=reasoning)
                     self._broadcast(ev, should_log=False)
                     yield ev
@@ -714,6 +763,7 @@ class LightweightEngine:
                                 # Found an end tag!
                                 thought = stream_buffer[:best_pos]
                                 if thought:
+                                    local_reasoning_chars += len(thought)
                                     ev = AgentEvent(type="thinking", data=thought)
                                     self._broadcast(ev, should_log=False)
                                     yield ev
@@ -724,6 +774,18 @@ class LightweightEngine:
                                 # No end tag yet. Yield most of the thinking content.
                                 if len(stream_buffer) > 12:
                                     to_yield = stream_buffer[:-12]
+                                    
+                                    # Sanity check: if reasoning tokens (approx) exceed limit, stop.
+                                    # We use character count as a proxy (4 chars/token).
+                                    approx_reasoning_tokens = self.session_usage.get("reasoning_tokens", 0) + (local_reasoning_chars + len(to_yield)) // 4
+                                    if approx_reasoning_tokens > self.max_reasoning_tokens:
+                                        ev = AgentEvent(type="system", data=f"[ERROR] Reasoning token limit ({self.max_reasoning_tokens}) exceeded. Stopping.")
+                                        self._broadcast(ev)
+                                        yield ev
+                                        self._is_running = False
+                                        break
+
+                                    local_reasoning_chars += len(to_yield)
                                     ev = AgentEvent(type="thinking", data=to_yield)
                                     self._broadcast(ev, should_log=False)
                                     yield ev
@@ -733,6 +795,7 @@ class LightweightEngine:
                 # Ensure the buffer is cleared at the end of the stream
                 if not delta.content and stream_buffer:
                     if in_think_block:
+                        local_reasoning_chars += len(stream_buffer)
                         ev = AgentEvent(type="thinking", data=stream_buffer)
                     else:
                         text_content += stream_buffer
@@ -757,6 +820,23 @@ class LightweightEngine:
                                 tool_call_accumulator[idx]["name"] = tc.function.name
                             if tc.function.arguments:
                                 tool_call_accumulator[idx]["arguments"] += tc.function.arguments
+
+            if local_reasoning_chars > 0:
+                estimated_reasoning = local_reasoning_chars // 4
+                if run_usage:
+                    if not run_usage.get("reasoning_tokens"):
+                        run_usage["reasoning_tokens"] = estimated_reasoning
+                        self.session_usage["reasoning_tokens"] = self.session_usage.get("reasoning_tokens", 0) + estimated_reasoning
+                else:
+                    run_usage = {
+                        "prompt_tokens": 0,
+                        "completion_tokens": estimated_reasoning,
+                        "total_tokens": estimated_reasoning,
+                        "reasoning_tokens": estimated_reasoning,
+                    }
+                    self.session_usage["reasoning_tokens"] = self.session_usage.get("reasoning_tokens", 0) + estimated_reasoning
+                    self.session_usage["completion_tokens"] = self.session_usage.get("completion_tokens", 0) + estimated_reasoning
+                    self.session_usage["total_tokens"] = self.session_usage.get("total_tokens", 0) + estimated_reasoning
 
             if not self._is_running:
                 break
@@ -829,11 +909,16 @@ class LightweightEngine:
                     elif "old_string" in kwargs and tool_name != "file_edit":
                         tool_name = "file_edit"
                     elif "filepath" in kwargs and "content" not in kwargs and "command" not in kwargs:
-                        if tool_name != "bash":
-                            tool_name = "bash"
-                            kwargs["action"] = "read"
-                        elif kwargs.get("action") != "read":
-                            kwargs["action"] = "read"
+                        # Legitimate tools that use 'filepath' should not be rerouted to bash.
+                        # Only reroute if the tool name is unknown or explicitly 'bash' without an action.
+                        known_file_tools = ("read_file", "file_write", "file_edit", "file_delete", "patch_code_range")
+                        if tool_name not in known_file_tools:
+                            if tool_name != "bash":
+                                tool_name = "bash"
+                                kwargs["action"] = "read"
+                            elif kwargs.get("action") != "read":
+                                kwargs["action"] = "read"
+
 
                     if tool_name != original_name:
                         self._broadcast(AgentEvent(type="system", data=f"[SHIM] Rerouted {original_name}→{tool_name}"))

@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 from agent_engine.env_utils import get_clean_env
 
-_MAX_OUTPUT = 4000
+_MAX_OUTPUT = 128000
 _MAX_BACKGROUND_JOBS = 20       # DoS guard: cap concurrent background processes
 _MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB guard: prevent OOM via large-file reads
 
@@ -46,50 +46,52 @@ class BuiltinTools:
         except Exception as exc:
             return f"Error: {exc}"
 
-    async def bash(self, **kwargs) -> str:
-        """Execute and manage shell commands.
-
-        Actions:
-          - 'run' (default): Execute a command synchronously and return output.
-              Required: command
-          - 'background': Start a command in the background without waiting.
-              Required: command.  Returns a job_id to use with 'logs'/'kill'.
-          - 'logs': Read buffered stdout/stderr from a background job.
-              Required: job_id.  Optional: tail_lines (last N lines, default 100).
-          - 'kill': Terminate a background job and free its resources.
-              Required: job_id.
-          - 'read': Read a file's contents (alias for read_file).
-              Required: filepath.  Optional: start_line, end_line.
-
-        Note: 'run' is assumed when only 'command' is supplied with no 'action'.
-        Note: Output for 'run' action is truncated to the last 4000 characters.
+    async def bash(self, command: str = "", action: str = "run", job_id: str = "", timeout: int = 60, tail_lines: int = 100, filepath: str = "", start_line: int = 1, end_line: int = -1) -> str:
+        """Execute shell commands or read files.
+        
+        Args:
+            command: The shell command to run (e.g., 'ls -l', 'grep ...'). Required for 'run' and 'background'.
+            action: 'run' (default), 'background' (long-running), 'logs' (get background output), 'kill' (stop job), or 'read' (alias for read_file).
+            job_id: The ID of a background job (for 'logs' and 'kill').
+            timeout: Max seconds for 'run' (default 60).
+            tail_lines: Lines of logs to return (default 100).
+            filepath: Path to a file to read (for 'read' action).
+            start_line: First line to read (for 'read', 1-indexed).
+            end_line: Last line to read (for 'read', -1 for EOF).
         """
-        command = kwargs.get("command", "")
-        action = kwargs.get("action", "run")
-        job_id = kwargs.get("job_id", "")
-        timeout = int(kwargs.get("timeout", 60))
-        tail_lines = int(kwargs.get("tail_lines", 100))
+        kwargs = {
+            "command": command.strip() if isinstance(command, str) else "",
+            "action": action.strip().lower() if isinstance(action, str) else "run",
+            "job_id": job_id.strip() if isinstance(job_id, str) else "",
+            "timeout": int(timeout) if timeout else 60,
+            "tail_lines": int(tail_lines) if tail_lines else 100,
+            "filepath": filepath.strip() if isinstance(filepath, str) else "",
+            "start_line": int(start_line) if start_line else 1,
+            "end_line": int(end_line) if end_line else -1,
+        }
+        command = kwargs["command"]
+        action = kwargs["action"]
+        job_id = kwargs["job_id"]
+        timeout = kwargs["timeout"]
+        tail_lines = kwargs["tail_lines"]
+        filepath = kwargs["filepath"]
+
         # Normalize unknown actions that look like shell commands (e.g. model sends action='ls')
         known_actions = {"run", "background", "logs", "kill", "read"}
-        if action not in known_actions and command.strip():
-            action = "run"  # graceful fallback: just run the command
-
-        # Backward-compat: treat bare command with no action as 'run'
-        if action == "run" and not command.strip():
-            return (
-                "Error: `bash` with action='run' requires a `command` argument. "
-                "If you are writing file content, use `file_write(filepath, content)` instead."
-            )
+        if action not in known_actions and command:
+            action = "run"
 
         # ── run ──────────────────────────────────────────────────────────────
         if action == "run":
+            if not command:
+                return "Error: 'run' action requires a 'command' argument."
             if timeout <= 0:
                 return "Error: timeout must be a positive integer."
             return await self._run_command(command, timeout)
 
         # ── background ───────────────────────────────────────────────────────
         elif action == "background":
-            if not command.strip():
+            if not command:
                 return "Error: 'background' requires a 'command' argument."
             if len(self._running_jobs) >= _MAX_BACKGROUND_JOBS:
                 return (
@@ -150,13 +152,19 @@ class BuiltinTools:
 
         # ── read ─────────────────────────────────────────────────────────────
         elif action == "read":
-            if not kwargs.get("filepath"):
-                return "Error: 'read' action requires a 'filepath' argument."
-            # Call our existing read_file logic
+            target_path = filepath or command
+            if not target_path:
+                return "Error: 'read' action requires a 'filepath' or 'command' argument."
+            
+            # Heuristic: if action is 'read' but the input looks like a shell command (has spaces),
+            # just execute it as a command instead of failing.
+            if " " in target_path:
+                return await self._run_command(target_path, timeout)
+                
             return await self.read_file(
-                kwargs["filepath"],
-                start_line=kwargs.get("start_line", 1),
-                end_line=kwargs.get("end_line", -1)
+                target_path,
+                start_line=kwargs["start_line"],
+                end_line=kwargs["end_line"]
             )
 
         else:
@@ -227,6 +235,78 @@ class BuiltinTools:
             return f"Successfully edited {filepath}."
         except Exception as exc:
             return f"Error: {exc}"
+
+    async def patch_code_range(self, filepath: str, start_byte: int, end_byte: int, replacement: str) -> str:
+        """
+        Surgically replace a byte range in a file with new content.
+        
+        This tool is designed to be used with byte offsets provided by AST-analysis tools 
+        (like Tree-Sitter MCP). It ensures precise, structural edits.
+        """
+        if not self._is_safe_path(filepath):
+            return f"Security Error: Access to '{filepath}' is denied."
+        target = str(Path(os.path.join(self.workdir, filepath)).resolve())
+        try:
+            with open(target, "rb") as f:
+                content = f.read()
+            
+            if start_byte < 0 or end_byte > len(content) or start_byte > end_byte:
+                return f"Error: Byte range [{start_byte}, {end_byte}] is invalid."
+            
+            # --- Line-by-Line Indentation Tracking ---
+            # 1. Identify the base indentation of the line we are patching
+            line_start = content.rfind(b"\n", 0, start_byte) + 1
+            base_indent_bytes = content[line_start:start_byte]
+            # Ensure we only take leading whitespace
+            base_indent = b""
+            for b in base_indent_bytes:
+                if b in b" \t":
+                    base_indent += bytes([b])
+                else:
+                    break
+            
+            base_indent_str = base_indent.decode("utf-8")
+
+            # 2. Re-align the replacement block
+            lines = replacement.splitlines()
+            if lines:
+                # Remove common indentation from the AI's input to get a "flat" version
+                # then apply the file's base indentation to every line.
+                first_line_strip = len(lines[0]) - len(lines[0].lstrip())
+                
+                new_lines = []
+                for i, line in enumerate(lines):
+                    # We strip the AI's first-line indentation from all lines to find the "relative" shift
+                    stripped = line[first_line_strip:] if len(line) >= first_line_strip else line.lstrip()
+                    
+                    if i == 0:
+                        # For the first line, we only add the missing indentation
+                        # If start_byte is already at/after the line's base indentation, we add nothing.
+                        current_indent_len = start_byte - line_start
+                        needed_indent = base_indent_str[current_indent_len:]
+                        new_lines.append(needed_indent + stripped)
+                    else:
+                        # For subsequent lines, we always apply the full base indentation
+                        new_lines.append(base_indent_str + stripped if stripped else "")
+                
+                replacement = "\n".join(new_lines)
+
+
+            new_content = content[:start_byte] + replacement.encode("utf-8") + content[end_byte:]
+
+
+            
+            with open(target, "wb") as f:
+                f.write(new_content)
+            
+            return f"Successfully patched {filepath} at byte range [{start_byte}, {end_byte}]."
+        except Exception as exc:
+            return f"Error: {exc}"
+
+
+
+
+
 
     async def file_delete(self, filepath: str) -> str:
         """Delete a file within the working directory."""

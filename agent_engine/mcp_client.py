@@ -20,4 +20,14 @@ class MCPServerManager:
         return self._session
 
     async def disconnect(self) -> None:
-        await self._exit_stack.aclose()
+        if self._exit_stack is None:
+            return
+        
+        old_stack = self._exit_stack
+        self._exit_stack = None
+        self._session = None
+
+        try:
+            await old_stack.aclose()
+        except BaseException:
+            pass

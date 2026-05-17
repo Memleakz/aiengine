@@ -56,11 +56,15 @@ class ToolRegistry:
         tool_name = mcp_tool.name
 
         async def _wrapper(**kwargs):
-            if workdir_getter and "directory" in (mcp_tool.inputSchema.get("properties") or {}):
-                if "directory" not in kwargs:
-                    kwargs["directory"] = workdir_getter()
-                    # If we inject directory, remove projectId so the server doesn't use a wrong cache
-                    kwargs.pop("projectId", None)
+            props = mcp_tool.inputSchema.get("properties") or {}
+            if workdir_getter:
+                # Inject workdir into common path-related arguments if not provided
+                for key in ("directory", "path", "root_path", "project_path", "base_path"):
+                    if key in props and key not in kwargs:
+                        kwargs[key] = workdir_getter()
+                        # Some servers use projectId as a cache key; clearing it ensures fresh analysis of the new path
+                        kwargs.pop("projectId", None)
+                        break
             result = await session.call_tool(tool_name, arguments=kwargs)
             parts = []
             for content in result.content:

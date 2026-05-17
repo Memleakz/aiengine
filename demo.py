@@ -60,7 +60,7 @@ async def _drain(gen) -> AgentEvent:
 async def demo_basic_text() -> None:
     _section("Feature 1 — Basic Text Response (streaming)")
 
-    engine = LightweightEngine()
+    engine = LightweightEngine(allowed_tools=["bash", "file_write"])
     try:
         done = await _drain(engine.run("In one sentence, what is the capital of France?"))
         usage = done.metadata.get("usage") if done else None
@@ -109,7 +109,7 @@ async def get_current_time(timezone_name: str = "UTC") -> str:
 async def demo_custom_tool() -> None:
     _section("Feature 3 — Custom Tool Registration")
 
-    engine = LightweightEngine()
+    engine = LightweightEngine(allowed_tools=["bash", "file_write"])
     engine.tools.register(get_current_time)
     try:
         await _drain(engine.run("What is the current UTC time? Use the get_current_time tool."))
@@ -164,7 +164,7 @@ async def demo_system_prompt() -> None:
 async def demo_mcp_config() -> None:
     _section("Feature 6 — MCP Config Loader (graceful skip)")
 
-    engine = LightweightEngine()
+    engine = LightweightEngine(allowed_tools=["bash", "file_write"])
     try:
         # Attempt to load the sample config bundled with the package.
         print(f"  Loading: mcp_config.json")
@@ -195,7 +195,7 @@ async def demo_reasoning() -> None:
     _section(f"Feature 7 — Reasoning Test ({active_model})")
 
     # Uses the environment variables (AGENT_MODEL, AGENT_BASE_URL, etc.)
-    engine = LightweightEngine()
+    engine = LightweightEngine(allowed_tools=["bash", "file_write"])
     try:
         print(f"  Asking {engine.model} a reasoning question...\n")
         await _drain(engine.run("Which is larger, 9.9 or 9.11? Think step by step. Use plain text only, avoid LaTeX or special math notation."))
@@ -204,9 +204,7 @@ async def demo_reasoning() -> None:
 
 
 async def demo_system_network_tools():
-    print("=" * 60)
-    print("  Feature 8 — System and Network Tools")
-    print("=" * 60)
+    _section("Feature 8 — System and Network Tools")
 
     engine = LightweightEngine(
         allowed_tools=["system_info", "network_tool"],
@@ -222,9 +220,7 @@ async def demo_system_network_tools():
 
 
 async def demo_website_creation():
-    print("=" * 60)
-    print("  Feature 9 — Website Creation (sandboxed)")
-    print("=" * 60)
+    _section("Feature 9 — Website Creation (sandboxed)")
 
     # Prepare the demosite folder
     demosite_path = os.path.join(_SRC_DIR, "demosite")
@@ -253,7 +249,6 @@ async def demo_website_creation():
         await engine.close()
 
 
-
 async def demo_parallel_execution() -> None:
     _section("Feature 10 — Parallel Tool Execution")
     engine = LightweightEngine(allowed_tools=["bash", "get_time", "system_info"])
@@ -266,8 +261,51 @@ async def demo_parallel_execution() -> None:
         await engine.close()
 
 
+async def demo_tree_sitter() -> None:
+    _section("Feature 11 — Tree-Sitter MCP (Code Analysis)")
+
+    engine = LightweightEngine(allowed_tools=["bash", "file_write", "patch_code_range"])
+    try:
+        print(f"  Loading: mcp_config.json")
+        await engine.load_mcp_config("mcp_config.json")
+
+        connected = [(m._params.command, m._params.args) for m in engine._mcp_managers]
+        print(f"  Connected MCP servers: {[c[0] for c in connected]}")
+        
+        if not any("tree-sitter" in str(c) for c in connected):
+            print("  ❌ Tree-sitter MCP not connected. Skipping demo.")
+            return
+
+        print("  Asking the agent to analyze this project using tree-sitter...\n")
+        
+        # We give it a prompt that encourages a multi-stage surgical journey.
+        prompt = (
+            "Let's perform a multi-stage surgical refactoring journey using Tree-Sitter. "
+            "STAGE 1: Discovery. First, use bash to create 'dummy_math.py' with two classes (A and B). "
+            "Both should have an identical method:\n"
+            "    def add(self, a, b):\n"
+            "        return a + b\n"
+            "Register the project directory ('.') and use get_ast to confirm the structural layout. "
+
+            
+            "STAGE 2: Transformation. We want to modernize ONLY Class B. "
+            "Using the exact byte offsets from the AST, perform a surgical patch on Class B's method to: "
+            "1. Rename 'add' to 'compute'. "
+            "2. Add type hints (a: int, b: int) -> int. "
+            "3. Inject a new line at the start of the method: 'print(f\"Computing {a} + {b} in Class B...\")'. "
+            "IMPORTANT: Use the patch_code_range tool for this. Do not use search-and-replace. "
+            
+            "STAGE 3: Verification. Finally, use 'bash' (cat) to prove the 'Refactoring Isolation': "
+            "Class A should still have the original 'add' method, while Class B has been surgically transformed."
+        )
+
+        await _drain(engine.run(prompt))
+    finally:
+        await engine.close()
+
+
 async def demo_persistence() -> None:
-    _section("Feature 11 — Trace Persistence")
+    _section("Feature 12 — Trace Persistence")
     engine = LightweightEngine(allowed_tools=["bash"])
     try:
         session_id = engine.session_id
@@ -300,7 +338,7 @@ async def demo_persistence() -> None:
 
 
 async def demo_workdir_test() -> None:
-    _section("Feature 12 — Workdir Setting Test")
+    _section("Feature 13 — Workdir Setting Test")
     # Setup test directories
     base_test_dir = os.path.abspath(os.path.join("outputs", "aiengine", "src", "workdir_test"))
     if os.path.exists(base_test_dir):
@@ -343,7 +381,7 @@ async def demo_workdir_test() -> None:
 
 
 async def demo_safety_test() -> None:
-    _section("Feature 13 — Path Traversal Safety Test")
+    _section("Feature 14 — Path Traversal Safety Test")
     test_dir = os.path.abspath(os.path.join("outputs", "aiengine", "src", "safety_test"))
     os.makedirs(test_dir, exist_ok=True)
     
@@ -382,19 +420,20 @@ async def main() -> None:
     print("  agent_engine — Feature Demo")
     print("=" * 60)
 
-    await demo_basic_text()
-    await demo_builtin_tools()
-    await demo_custom_tool()
-    await demo_history()
-    await demo_system_prompt()
-    await demo_mcp_config()
-    await demo_system_network_tools()
-    await demo_website_creation()
-    await demo_reasoning()
-    await demo_parallel_execution()
-    await demo_persistence()
-    await demo_workdir_test()
-    await demo_safety_test()
+    #await demo_basic_text()
+    #await demo_builtin_tools()
+    #await demo_custom_tool()
+    #await demo_history()
+    #await demo_system_prompt()
+    #await demo_mcp_config()
+    #await demo_system_network_tools()
+    #await demo_website_creation()
+    #await demo_reasoning()
+    #await demo_parallel_execution()
+    await demo_tree_sitter()
+    #await demo_persistence()
+    #await demo_workdir_test()
+    #await demo_safety_test()
 
     print("\n✅  All demo sections completed.")
 

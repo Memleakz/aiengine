@@ -31,9 +31,9 @@
       "command": "sh",
       "args": [
         "-c",
-        "/home/tobias/dev/Repo/aiengine/src/web-cli/.venv/bin/mcp-server-tree-sitter | grep --line-buffered -E '^\\{'"
+        "./web-cli/.venv/bin/mcp-server-tree-sitter | grep --line-buffered -E '^\\{'"
       ],
-      "enabled": false
+      "enabled": true
     }
   }
 }

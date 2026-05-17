@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 # ==========================================
  export OPENAI_API_KEY="ollama"  # OpenAI client requires some non-empty string
  export AGENT_BASE_URL="http://127.0.0.1:11434/v1"
- export AGENT_MODEL="gemma4b-agent:latest"     # Replace with your pulled model (e.g., mistral, phi3)
+ export AGENT_MODEL="gemma4:e4b"     # Replace with your pulled model (e.g., mistral, phi3)
 
 
 # Check if NVIDIA_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY is set
