@@ -173,8 +173,10 @@ async def demo_mcp_config() -> None:
         connected = len(engine._mcp_managers)
         print(f"  Connected MCP servers: {connected}")
         if connected:
-            registered = list(engine.tools._tools.keys())
-            print(f"  MCP tools registered: {registered}")
+            all_tools = list(engine.tools._tools.keys())
+            # Filter out allowed built-in tools so we only list true MCP tools
+            mcp_tools = [t for t in all_tools if t not in ["bash", "file_write"]]
+            print(f"  MCP tools registered: {mcp_tools}")
 
         # Also show graceful handling when file is missing.
         print("\n  Testing missing config (expect a warning, no crash):")
@@ -285,7 +287,7 @@ async def demo_tree_sitter() -> None:
             "Both should have an identical method:\n"
             "    def add(self, a, b):\n"
             "        return a + b\n"
-            "Register the project directory ('.') and use get_ast to confirm the structural layout. "
+            "Use get_ast to confirm the structural layout. "
 
             
             "STAGE 2: Transformation. We want to modernize ONLY Class B. "
@@ -352,8 +354,8 @@ async def demo_workdir_test() -> None:
         
         # We manually invoke the tool methods to verify the workdir logic 
         # independently of LLM completions (which might fail with dummy keys).
-        print("  Manually writing 'test_file_1.txt' via engine.builtin_tools...")
-        await engine.builtin_tools.file_write(filepath="test_file_1.txt", content="Hello from turn 1")
+        print("  Manually writing 'test_file_1.txt' via engine.tools.dispatch...")
+        await engine.tools.dispatch("file_write", {"filepath": "test_file_1.txt", "content": "Hello from turn 1"})
         
         file1_path = os.path.join(base_test_dir, "test_file_1.txt")
         if os.path.exists(file1_path):
@@ -368,7 +370,7 @@ async def demo_workdir_test() -> None:
         engine.set_workdir(new_subdir)
         
         print("  Manually writing 'test_file_2.txt' in the NEW workdir...")
-        await engine.builtin_tools.file_write(filepath="test_file_2.txt", content="Hello from turn 2")
+        await engine.tools.dispatch("file_write", {"filepath": "test_file_2.txt", "content": "Hello from turn 2"})
         
         file2_path = os.path.join(new_subdir, "test_file_2.txt")
         if os.path.exists(file2_path):
@@ -391,7 +393,7 @@ async def demo_safety_test() -> None:
         print("  Attempting to write a file to '../../traversal_test.txt' (outside workdir)...")
         
         # Manually invoke to check the return message
-        result = await engine.builtin_tools.file_write(filepath="../../traversal_test.txt", content="evil")
+        result = await engine.tools.dispatch("file_write", {"filepath": "../../traversal_test.txt", "content": "evil"})
         
         if "Security Error" in result:
             print(f"  ✅ Blocked correctly: {result}")
@@ -400,13 +402,30 @@ async def demo_safety_test() -> None:
             
         # Try another one: absolute path
         print("\n  Attempting to write to absolute path '/tmp/evil.txt'...")
-        result = await engine.builtin_tools.file_write(filepath="/tmp/evil.txt", content="evil")
+        result = await engine.tools.dispatch("file_write", {"filepath": "/tmp/evil.txt", "content": "evil"})
         
         if "Security Error" in result:
             print(f"  ✅ Blocked correctly: {result}")
         else:
             print(f"  ❌ FAILED: Absolute path access was not blocked! Result: {result}")
 
+    finally:
+        await engine.close()
+
+
+async def demo_extended_tools() -> None:
+    _section("Feature 15 — Search and Python REPL (grep_search + python_repl)")
+    engine = LightweightEngine(
+        allowed_tools=["grep_search", "python_repl"],
+        workdir=_SRC_DIR,
+    )
+    try:
+        prompt = (
+            "Find all occurrences of 'LightweightEngine' in the tests directory using grep_search. "
+            "Then, use python_repl to compute the factorial of 10."
+        )
+        print(f"  Prompt: {prompt}")
+        await _drain(engine.run(prompt))
     finally:
         await engine.close()
 
@@ -421,19 +440,20 @@ async def main() -> None:
     print("=" * 60)
 
     #await demo_basic_text()
-    #await demo_builtin_tools()
-    #await demo_custom_tool()
+    await demo_builtin_tools()
+    await demo_custom_tool()
     #await demo_history()
-    #await demo_system_prompt()
-    #await demo_mcp_config()
+    await demo_system_prompt()
+    await demo_mcp_config()
     #await demo_system_network_tools()
     #await demo_website_creation()
     #await demo_reasoning()
-    #await demo_parallel_execution()
+    await demo_parallel_execution()
     await demo_tree_sitter()
-    #await demo_persistence()
-    #await demo_workdir_test()
-    #await demo_safety_test()
+    await demo_persistence()
+    await demo_workdir_test()
+    await demo_safety_test()
+    await demo_extended_tools()
 
     print("\n✅  All demo sections completed.")
 

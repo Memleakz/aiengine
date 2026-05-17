@@ -1,4 +1,7 @@
 from .ask_user import ask_user
+from .bash_tool import BashTool
+from .file_ops import read_file, file_write, file_edit, patch_code_range, file_delete, directory_create
+from .search_ops import glob_search, grep_search
 from .code_analysis import code_analysis
 from .cron_tool import cron_tool
 from .get_time import get_time
@@ -17,6 +20,15 @@ from .web_fetch import web_fetch
 from .web_search import web_search
 
 __all__ = [
+    "BashTool",
+    "read_file",
+    "file_write",
+    "file_edit",
+    "patch_code_range",
+    "file_delete",
+    "directory_create",
+    "glob_search",
+    "grep_search",
     "web_fetch",
     "web_search",
     "ask_user",

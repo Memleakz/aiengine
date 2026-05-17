@@ -33,7 +33,16 @@
         "-c",
         "./web-cli/.venv/bin/mcp-server-tree-sitter | grep --line-buffered -E '^\\{'"
       ],
-      "enabled": true
+      "enabled": true,
+      "auto_init": [
+        {
+          "tool": "register_project_tool",
+          "arguments": {
+            "project": "${workdir}",
+            "path": "${workdir}"
+          }
+        }
+      ]
     }
   }
 }

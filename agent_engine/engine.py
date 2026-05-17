@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, Callable
 
 from openai import NOT_GIVEN, AsyncOpenAI
 
-from agent_engine.builtin_tools import BuiltinTools
+
 from agent_engine.events import AgentEvent
 from agent_engine.mcp_client import MCPServerManager
 from agent_engine.persistence import TraceLogger
@@ -15,8 +15,10 @@ import uuid
 from agent_engine.tools import (
     ToolRegistry,
     ask_user,
+    bash_tool,
     code_analysis,
     cron_tool,
+    file_ops,
     get_time,
     git_tool,
     manage_tasks,
@@ -24,6 +26,7 @@ from agent_engine.tools import (
     network_tool,
     notebook_edit,
     python_repl,
+    search_ops,
     skill_tool,
     sleep,
     subagent,
@@ -125,7 +128,7 @@ class LightweightEngine:
         self._mcp_managers: list[MCPServerManager] = []
 
         if allowed_tools:
-            self.builtin_tools = BuiltinTools(workdir=self.workdir)
+            self.bash_tool_instance = bash_tool.BashTool(workdir=self.workdir)
             def bind_workdir(fn: Callable) -> Callable:
                 @functools.wraps(fn)
                 async def wrapper(*args, **kwargs):
@@ -133,16 +136,16 @@ class LightweightEngine:
                 return wrapper
 
             tool_method_map = {
-                "bash": self.builtin_tools.bash,
-                "read_file": self.builtin_tools.read_file,
-                "file_write": self.builtin_tools.file_write,
-                "file_edit": self.builtin_tools.file_edit,
-                "patch_code_range": self.builtin_tools.patch_code_range,
-                "file_delete": self.builtin_tools.file_delete,
+                "bash": self.bash_tool_instance.bash,
+                "read_file": bind_workdir(file_ops.read_file),
+                "file_write": bind_workdir(file_ops.file_write),
+                "file_edit": bind_workdir(file_ops.file_edit),
+                "patch_code_range": bind_workdir(file_ops.patch_code_range),
+                "file_delete": bind_workdir(file_ops.file_delete),
 
-                "directory_create": self.builtin_tools.directory_create,
-                "glob_search": self.builtin_tools.glob_search,
-                "grep_search": self.builtin_tools.grep_search,
+                "directory_create": bind_workdir(file_ops.directory_create),
+                "glob_search": bind_workdir(search_ops.glob_search),
+                "grep_search": bind_workdir(search_ops.grep_search),
                 "web_fetch": web_fetch,
                 "web_search": web_search,
                 "ask_user": ask_user,
@@ -191,8 +194,8 @@ class LightweightEngine:
     def set_workdir(self, new_workdir: str) -> None:
         """Update the working directory for the engine and its builtin tools."""
         self.workdir = os.path.abspath(new_workdir)
-        if hasattr(self, "builtin_tools"):
-            self.builtin_tools.workdir = self.workdir
+        if hasattr(self, "bash_tool_instance"):
+            self.bash_tool_instance.workdir = self.workdir
 
     def update_completion_kwargs(self, **kwargs) -> None:
         """Update model parameters like temperature, top_p, max_tokens, etc."""
@@ -492,11 +495,21 @@ class LightweightEngine:
             if not details.get("enabled"):
                 continue
             try:
-                await self.connect_mcp(command=details["command"], args=details["args"])
+                if "auto_init" in details:
+                    await self.connect_mcp(
+                        command=details["command"],
+                        args=details["args"],
+                        auto_init=details["auto_init"]
+                    )
+                else:
+                    await self.connect_mcp(
+                        command=details["command"],
+                        args=details["args"]
+                    )
             except Exception as exc:  # noqa: BLE001
                 print(f"Error connecting MCP '{name}': {exc}")
 
-    async def connect_mcp(self, command: str, args: list[str]) -> None:
+    async def connect_mcp(self, command: str, args: list[str], auto_init: list[dict] | dict | None = None) -> None:
         manager = MCPServerManager(command, args)
         try:
             session = await manager.connect()
@@ -504,6 +517,25 @@ class LightweightEngine:
             for tool in result.tools:
                 self.tools.register_mcp_tool(tool, session, workdir_getter=lambda: self.workdir)
             self._mcp_managers.append(manager)
+
+            # Process auto-initialization calls if configured
+            if auto_init:
+                calls = [auto_init] if isinstance(auto_init, dict) else auto_init
+                for call in calls:
+                    tool_name = call.get("tool")
+                    tool_args = call.get("arguments", {})
+                    # Dynamically resolve ${workdir} placeholders
+                    resolved_args = {}
+                    for k, v in tool_args.items():
+                        if isinstance(v, str) and v == "${workdir}":
+                            resolved_args[k] = self.workdir
+                        else:
+                            resolved_args[k] = v
+                    
+                    if tool_name:
+                        print(f"  Auto-initializing MCP tool '{tool_name}'...")
+                        init_res = await self._execute_tool(tool_name, resolved_args)
+                        print(f"  Auto-init response: {init_res[0]}")
         except Exception:
             # If initialization fails (e.g., server crashes or times out), we MUST
             # cleanly disconnect to prevent the AsyncExitStack from being garbage

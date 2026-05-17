@@ -73,3 +73,4 @@ web-cli/npm-debug.log*
 web-cli/yarn-debug.log*
 web-cli/yarn-error.log*
 web-cli/.venv/
+dummy_math.py

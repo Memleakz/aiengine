@@ -10,10 +10,29 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent_engine.builtin_tools import BuiltinTools
 from agent_engine.engine import LightweightEngine
 from agent_engine.events import AgentEvent
 from agent_engine.tools import ToolRegistry
+
+from agent_engine.tools.bash_tool import BashTool, _MAX_BACKGROUND_JOBS
+from agent_engine.tools import file_ops, search_ops
+class BuiltinTools:
+    def __init__(self, workdir):
+        self.workdir = workdir
+        self._bash_tool = BashTool(workdir)
+        self._running_jobs = self._bash_tool._running_jobs
+    async def bash(self, **kwargs): return await self._bash_tool.bash(**kwargs)
+    async def read_file(self, *args, **kwargs): return await file_ops.read_file(self.workdir, *args, **kwargs)
+    async def file_write(self, *args, **kwargs): return await file_ops.file_write(self.workdir, *args, **kwargs)
+    async def file_edit(self, *args, **kwargs): return await file_ops.file_edit(self.workdir, *args, **kwargs)
+    async def patch_code_range(self, *args, **kwargs): return await file_ops.patch_code_range(self.workdir, *args, **kwargs)
+    async def file_delete(self, *args, **kwargs): return await file_ops.file_delete(self.workdir, *args, **kwargs)
+    async def directory_create(self, *args, **kwargs): return await file_ops.directory_create(self.workdir, *args, **kwargs)
+    async def glob_search(self, *args, **kwargs): return await search_ops.glob_search(self.workdir, *args, **kwargs)
+    async def grep_search(self, *args, **kwargs): return await search_ops.grep_search(self.workdir, *args, **kwargs)
+    def _is_safe_path(self, *args, **kwargs): return file_ops._is_safe_path(self.workdir, *args, **kwargs)
+    async def _run_command(self, *args, **kwargs): return await self._bash_tool._run_command(*args, **kwargs)
+
 
 # Module-level tools instance used by tests that don't exercise workdir security.
 _tools = BuiltinTools(workdir=os.getcwd())
@@ -99,7 +118,7 @@ async def test_bash_background_job_tracked_in_running_jobs():
 @pytest.mark.asyncio
 async def test_bash_background_exception_returns_error_string():
     """If subprocess creation fails, return an error string — never raise."""
-    with patch("agent_engine.builtin_tools.asyncio.create_subprocess_shell",
+    with patch("agent_engine.tools.bash_tool.asyncio.create_subprocess_shell",
                side_effect=OSError("no shell")):
         result = await bash_background("any_command")
     assert "error" in result.lower()
@@ -385,10 +404,10 @@ async def test_mcp_manager_disconnect_closes_exit_stack():
     from agent_engine.mcp_client import MCPServerManager
 
     mgr = MCPServerManager("npx", [])
-    mgr._exit_stack = AsyncMock()
-    mgr._exit_stack.aclose = AsyncMock()
+    mock_stack = AsyncMock()
+    mgr._exit_stack = mock_stack
     await mgr.disconnect()
-    mgr._exit_stack.aclose.assert_awaited_once()
+    mock_stack.aclose.assert_awaited_once()
 
 
 # ===========================================================================
@@ -689,7 +708,7 @@ async def test_run_multiple_tool_calls_in_one_response():
 @pytest.mark.asyncio
 async def test_bash_kill_raises_during_timeout_still_returns_error():
     """if proc.kill() raises during timeout cleanup, the error is swallowed."""
-    with patch("agent_engine.builtin_tools.asyncio.create_subprocess_shell") as mock_create:
+    with patch("agent_engine.tools.bash_tool.asyncio.create_subprocess_shell") as mock_create:
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
         mock_proc.kill = MagicMock(side_effect=ProcessLookupError("no such process"))
@@ -703,7 +722,7 @@ async def test_bash_kill_raises_during_timeout_still_returns_error():
 @pytest.mark.asyncio
 async def test_bash_subprocess_creation_fails_returns_error():
     """if create_subprocess_shell itself raises, return error string."""
-    with patch("agent_engine.builtin_tools.asyncio.create_subprocess_shell", side_effect=OSError("cannot fork")):
+    with patch("agent_engine.tools.bash_tool.asyncio.create_subprocess_shell", side_effect=OSError("cannot fork")):
         result = await bash(action="run", command="echo hi")
 
     assert result.startswith("Error:")
