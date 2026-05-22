@@ -36,7 +36,7 @@ class TreeCache:
             ".php": "php",
             ".cs": "csharp",
         }
-        return mapping.get(ext, "python")
+        return mapping.get(ext)
 
     @classmethod
     def get_parser(cls, filepath: str) -> tree_sitter.Parser:
@@ -610,6 +610,9 @@ async def verify_ast_integrity(filepath: str, workdir: str = None) -> dict:
         if not os.path.isabs(filepath):
             filepath = os.path.join(workdir, filepath)
     try:
+        lang_name = TreeCache.get_language_name(filepath)
+        if not lang_name:
+            return {"syntax_valid": True, "unsupported": True}
         tree, source_bytes = TreeCache.get_tree(filepath)
     except Exception as e:
         return {"syntax_valid": False, "error": str(e)}
