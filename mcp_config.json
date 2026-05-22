@@ -8,7 +8,7 @@
         "--db",
         "./my_database.db"
       ],
-      "enabled": true
+      "enabled": false
     },
     "github": {
       "command": "npx",
@@ -33,13 +33,13 @@
         "-c",
         "./web-cli/.venv/bin/mcp-server-tree-sitter | grep --line-buffered -E '^\\{'"
       ],
-      "enabled": true,
+      "enabled": false,
       "auto_init": [
         {
           "tool": "register_project_tool",
           "arguments": {
-            "project": "${workdir}",
-            "path": "${workdir}"
+            "path": "${workdir}",
+            "name": "."
           }
         }
       ]

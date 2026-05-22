@@ -171,3 +171,71 @@ async def test_register_mcp_tool_executes():
     reg.register_mcp_tool(FakeMCPTool(), FakeSession())
     result = await reg.dispatch("mcp_echo", {})
     assert "echoed" in result
+
+
+@pytest.mark.asyncio
+async def test_execute_parameter_healing():
+    class HealingMCPTool:
+        name = "mcp_heal"
+        description = "Test Healing"
+        inputSchema = {  # noqa: N815
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "pattern": {"type": "string"},
+                "symbol_types": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                }
+            },
+            "required": ["pattern", "symbol_types"],
+        }
+
+    last_args = {}
+
+    class FakeSession:
+        async def call_tool(self, name, arguments):
+            nonlocal last_args
+            last_args = dict(arguments)
+            class Content:
+                text = "ok"
+            class Result:
+                content = [Content()]
+            return Result()
+
+    reg = ToolRegistry()
+    reg.register_mcp_tool(HealingMCPTool(), FakeSession())
+
+    # Dispatch with raw strings, object/dict array mappings, and missing project
+    await reg.dispatch("mcp_heal", {
+        "pattern": 'r"(my pattern)"',
+        "symbol_types": {"functions": True, "classes": False}
+    })
+
+    assert last_args["project"] == "."
+    assert last_args["pattern"] == "(my pattern)"
+    assert last_args["symbol_types"] == ["functions"]
+
+    # Dispatch with single string, comma-separated array coercion, and incorrect project name
+    await reg.dispatch("mcp_heal", {
+        "project": "incorrect_name",
+        "pattern": '"my pattern"',
+        "symbol_types": "functions, classes"
+    })
+    assert last_args["project"] == "."
+    assert last_args["pattern"] == "my pattern"
+    assert last_args["symbol_types"] == ["functions", "classes"]
+
+    # Dispatch with alternate/singular symbol types to verify plural mapping
+    await reg.dispatch("mcp_heal", {
+        "pattern": "pattern",
+        "symbol_types": ["class", "method"]
+    })
+    assert last_args["symbol_types"] == ["classes", "functions"]
+
+    # Dispatch with empty symbol_types to verify default fallback
+    await reg.dispatch("mcp_heal", {
+        "pattern": "pattern",
+        "symbol_types": []
+    })
+    assert last_args["symbol_types"] == ["classes", "functions"]

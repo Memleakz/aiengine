@@ -264,7 +264,7 @@ async def demo_parallel_execution() -> None:
 
 
 async def demo_tree_sitter() -> None:
-    _section("Feature 11 — Tree-Sitter MCP (Code Analysis)")
+    _section("Feature 11 — Tree-Sitter MCP (Hardcore Code Analysis)")
 
     engine = LightweightEngine(allowed_tools=["bash", "file_write", "patch_code_range"])
     try:
@@ -278,32 +278,110 @@ async def demo_tree_sitter() -> None:
             print("  ❌ Tree-sitter MCP not connected. Skipping demo.")
             return
 
-        print("  Asking the agent to analyze this project using tree-sitter...\n")
-        
-        # We give it a prompt that encourages a multi-stage surgical journey.
-        prompt = (
-            "Let's perform a multi-stage surgical refactoring journey using Tree-Sitter. "
-            "STAGE 1: Discovery. First, use bash to create 'dummy_math.py' with two classes (A and B). "
-            "Both should have an identical method:\n"
-            "    def add(self, a, b):\n"
-            "        return a + b\n"
-            "Use get_ast to confirm the structural layout. "
+        print("  Asking the agent to analyze this project using advanced tree-sitter tools...\n")
 
-            
-            "STAGE 2: Transformation. We want to modernize ONLY Class B. "
-            "Using the exact byte offsets from the AST, perform a surgical patch on Class B's method to: "
-            "1. Rename 'add' to 'compute'. "
-            "2. Add type hints (a: int, b: int) -> int. "
-            "3. Inject a new line at the start of the method: 'print(f\"Computing {a} + {b} in Class B...\")'. "
-            "IMPORTANT: Use the patch_code_range tool for this. Do not use search-and-replace. "
-            
-            "STAGE 3: Verification. Finally, use 'bash' (cat) to prove the 'Refactoring Isolation': "
-            "Class A should still have the original 'add' method, while Class B has been surgically transformed."
+        prompt = (
+            "We want to perform a precision-guided structural refactoring operation on our project ( registered as '.').\n\n"
+            "1. First, write a python file 'dummy_math.py' containing two classes: Class A and Class B.\n"
+            "   Each class must initially define a method:\n"
+            "   def add(self, a, b):\n"
+            "       return a + b\n\n"
+            "2. Next, use advanced code analysis tools (like run_query or get_ast) to structurally analyze the 'dummy_math.py' file and find the exact byte boundaries of Class B's 'add' method.\n\n"
+            "3. Perform a surgical patch using the `patch_code_range` tool on Class B's method to:\n"
+            "   - Rename 'add' to 'compute'.\n"
+            "   - Add type hints: `(self, a: int, b: int) -> int`.\n"
+            "   - Inject a print statement: `print(f\"Computing {a} + {b} in Class B...\")` at the start of the body.\n"
+            "   Make absolutely sure that Class A remains entirely untouched!\n\n"
+            "4. Verify the structural change using get_symbols, and read the final file content to confirm the refactoring was done perfectly with correct indentation."
         )
 
         await _drain(engine.run(prompt))
     finally:
         await engine.close()
+
+
+async def demo_html_ast() -> None:
+    _section("Feature 13 — HTML AST Parsing (Precision HTML Editing)")
+
+    # Create demosite directory if not exists
+    demosite_dir = "demosite"
+    if not os.path.exists(demosite_dir):
+        os.makedirs(demosite_dir)
+
+    # Create a project root marker in demosite so the Tree-sitter MCP server does not
+    # climb up to the parent directory and fail to find demosite files.
+    marker_path = os.path.join(demosite_dir, "pyproject.toml")
+    has_marker = os.path.exists(marker_path)
+    if not has_marker:
+        with open(marker_path, "w") as f:
+            f.write("# marker for tree-sitter mcp project root\n")
+
+    # Generate a fresh, standard index.html so the demo runs predictably and independently
+    index_path = os.path.join(demosite_dir, "index.html")
+    index_content = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>The Daily Grind</title>
+    <style>
+        .menu-item1 { color: #f2a154; margin: 10px; }
+        .opening-hours { padding: 20px; background: #222; }
+    </style>
+</head>
+<body>
+    <h1>Welcome to The Daily Grind</h1>
+    <nav>
+        <a class="menu-item" href="#home">Home</a>
+        <a class="menu-item" href="#menu">Menu</a>
+        <a class="menu-item" href="#contact">Contact</a>
+    </nav>
+    <div class="contact-info">
+        <h2>Find Your Ritual</h2>
+        <div class="opening-hours">
+            <h3>Hours</h3>
+            <p>Mon - Fri: 6:30 AM - 5:00 PM</p>
+            <p>Sat - Sun: 7:30 AM - 4:00 PM</p>
+        </div>
+    </div>
+</body>
+</html>
+"""
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write(index_content)
+
+    engine = LightweightEngine(
+        workdir="demosite",
+        allowed_tools=["bash", "patch_code_range", "read_file", "get_document_map", "get_entity_coordinates", "get_references", "get_html_attribute_bytes", "verify_ast_integrity", "batch_ast_query"]
+    )
+    try:
+        # Load the custom optimal refactoring skill and set it as the system prompt!
+        src_dir = os.path.dirname(os.path.abspath(__file__))
+        skill_path = os.path.join(src_dir, ".agent_skills", "ultimate_software_dev.md")
+        if os.path.exists(skill_path):
+            with open(skill_path, "r", encoding="utf-8") as f:
+                skill_content = f.read()
+            engine.set_system_prompt(skill_content)
+            print("  ✓ Successfully loaded optimal AST refactoring skill into the agent's system prompt!")
+        else:
+            print("  ⚠️ Warning: .agent_skills/ultimate_software_dev.md not found, using default system prompt.")
+
+        print("  Asking the agent to surgically edit the demosite index.html...\n")
+
+        prompt = (
+            "Surgically edit 'index.html' to do two things:\n"
+            "1. Change 'menu-item' to 'menu-item1' in all matching locations.\n"
+            "2. Locate the ENTIRE opening-hours block (from '<div class=\"opening-hours\">' to its closing '</div>' inclusive) and structurally rewrite it to add a new Friday late-night shift: 'Friday: 6:30 AM - 9:00 PM (Late Night!)', and extend Sat - Sun hours to close at 6:00 PM.\n"
+            "Rely entirely on your system instructions and precision tools to execute this with 100% accuracy and zero corruption."
+        )
+
+        done = await _drain(engine.run(prompt))
+        usage = done.metadata.get("usage") if done else None
+        if usage:
+            print(f"📊 Token usage: {usage}")
+    finally:
+        await engine.close()
+        if not has_marker and os.path.exists(marker_path):
+            os.remove(marker_path)
 
 
 async def demo_persistence() -> None:
@@ -440,20 +518,21 @@ async def main() -> None:
     print("=" * 60)
 
     #await demo_basic_text()
-    await demo_builtin_tools()
-    await demo_custom_tool()
+    #await demo_builtin_tools()
+    #await demo_custom_tool()
     #await demo_history()
-    await demo_system_prompt()
-    await demo_mcp_config()
+    #await demo_system_prompt()
+    #await demo_mcp_config()
     #await demo_system_network_tools()
     #await demo_website_creation()
     #await demo_reasoning()
-    await demo_parallel_execution()
-    await demo_tree_sitter()
-    await demo_persistence()
-    await demo_workdir_test()
-    await demo_safety_test()
-    await demo_extended_tools()
+    #await demo_parallel_execution()
+    #await demo_tree_sitter()
+    await demo_html_ast()
+    #await demo_persistence()
+    #await demo_workdir_test()
+    #await demo_safety_test()
+    #await demo_extended_tools()
 
     print("\n✅  All demo sections completed.")
 

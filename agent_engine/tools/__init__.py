@@ -18,6 +18,14 @@ from .system_info import system_info
 from .todo_tool import manage_todo
 from .web_fetch import web_fetch
 from .web_search import web_search
+from .ast_ops import (
+    get_document_map,
+    get_entity_coordinates,
+    get_references,
+    get_html_attribute_bytes,
+    verify_ast_integrity,
+    batch_ast_query
+)
 
 __all__ = [
     "BashTool",
@@ -46,4 +54,10 @@ __all__ = [
     "system_info",
     "network_tool",
     "ToolRegistry",
+    "get_document_map",
+    "get_entity_coordinates",
+    "get_references",
+    "get_html_attribute_bytes",
+    "verify_ast_integrity",
+    "batch_ast_query",
 ]

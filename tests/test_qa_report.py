@@ -185,6 +185,52 @@ class TestBashReadAction:
         assert "line1" not in result
 
 
+class TestBashCoordsAction:
+    """Tests for the built-in 'coords' action in BashTool."""
+
+    @pytest.mark.asyncio
+    async def test_coords_action_calculates_correct_byte_offsets(self, tmpdir_tools):
+        tools, tmp_path = tmpdir_tools
+        (tmp_path / "index.html").write_text("line1\n  <div class=\"menu-item1\">\nline3\n")
+        result = await tools.bash(
+            action="coords",
+            filepath="index.html",
+            start_line=2,
+            command="menu-item1"
+        )
+        # line1 is 6 bytes ("line1\n")
+        # line2 has "  <div class=\"" before "menu-item1", which is 14 bytes
+        # So "menu-item1" start offset is 6 + 14 = 20
+        # End offset is 20 + len("menu-item1") = 30
+        assert "START: 20" in result
+        assert "END: 30" in result
+
+    @pytest.mark.asyncio
+    async def test_coords_action_missing_filepath_returns_error(self, tmpdir_tools):
+        tools, _ = tmpdir_tools
+        result = await tools.bash(action="coords", start_line=2, command="item")
+        assert "Error" in result and "filepath" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_coords_action_invalid_start_line_returns_error(self, tmpdir_tools):
+        tools, _ = tmpdir_tools
+        result = await tools.bash(action="coords", filepath="index.html", start_line=0, command="item")
+        assert "Error" in result and "positive" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_coords_action_missing_pattern_returns_error(self, tmpdir_tools):
+        tools, _ = tmpdir_tools
+        result = await tools.bash(action="coords", filepath="index.html", start_line=2)
+        assert "Error" in result and "command" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_coords_action_pattern_not_found_returns_error(self, tmpdir_tools):
+        tools, tmp_path = tmpdir_tools
+        (tmp_path / "index.html").write_text("hello\nworld\n")
+        result = await tools.bash(action="coords", filepath="index.html", start_line=1, command="nonexistent")
+        assert "Error" in result and "not found" in result.lower()
+
+
 class TestFileWriteBase64:
     """Lines 193-198: base64_content branch in file_write."""
 
