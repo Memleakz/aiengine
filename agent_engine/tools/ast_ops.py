@@ -67,37 +67,9 @@ class TreeCache:
 
     @classmethod
     def notify_edit(cls, filepath: str, start_byte: int, old_end_byte: int, new_end_byte: int, new_bytes: bytes):
-        """Perform sub-millisecond incremental updates to the cached tree."""
+        """Forces a full re-parse of the file upon edit to ensure absolute coordinate correctness."""
         abs_path = os.path.abspath(filepath)
-        if abs_path not in cls._cache:
-            # Fall back to standard full parse
-            cls.get_tree(abs_path, force_reload=True)
-            return
-
-        old_tree, old_bytes = cls._cache[abs_path]
-        try:
-            # Calculate coordinates
-            start_point = cls.get_point_for_byte(old_bytes, start_byte)
-            old_end_point = cls.get_point_for_byte(old_bytes, old_end_byte)
-            new_end_point = cls.get_point_for_byte(new_bytes, new_end_byte)
-
-            # Apply tree edit
-            old_tree.edit(
-                start_byte=start_byte,
-                old_end_byte=old_end_byte,
-                new_end_byte=new_end_byte,
-                start_point=start_point,
-                old_end_point=old_end_point,
-                new_end_point=new_end_point,
-            )
-
-            # Parse incrementally
-            parser = cls.get_parser(abs_path)
-            new_tree = parser.parse(new_bytes, old_tree)
-            cls._cache[abs_path] = (new_tree, new_bytes)
-        except Exception:
-            # Fallback to full parse in case of unexpected tree errors
-            cls.get_tree(abs_path, force_reload=True)
+        cls.get_tree(abs_path, force_reload=True)
 
     @classmethod
     def get_point_for_byte(cls, source_bytes: bytes, byte_offset: int) -> Tuple[int, int]:
@@ -221,8 +193,15 @@ async def get_entity_coordinates(filepath: str, entity_name: str, entity_type: O
     except Exception as e:
         return {"found": False, "error": str(e)}
 
-    class_types = {"class_definition", "class_declaration", "struct_specifier", "class_specifier", "type_declaration", "struct_item", "enum_item", "trait_item"}
-    func_types = {"function_definition", "function_declaration", "method_definition", "method_declaration", "function_item"}
+    class_types = {
+        "class_definition", "class_declaration", "struct_specifier", "class_specifier", 
+        "type_declaration", "struct_item", "enum_item", "trait_item", "interface_declaration", 
+        "type_alias_declaration", "type_spec"
+    }
+    func_types = {
+        "function_definition", "function_declaration", "method_definition", "method_declaration", 
+        "function_item", "arrow_function", "lexical_declaration"
+    }
 
     if entity_type == "class":
         target_types = class_types
@@ -298,10 +277,15 @@ async def get_entity_coordinates(filepath: str, entity_name: str, entity_type: O
             name_node = node.child_by_field_name("name")
             name = name_node.text.decode("utf-8") if name_node else None
             if not name:
-                for child in node.children:
-                    if child.type in ("identifier", "type_identifier", "property_identifier"):
-                        name = child.text.decode("utf-8")
-                        break
+                def find_first_identifier(n):
+                    if n.type in ("identifier", "type_identifier", "property_identifier"):
+                        return n.text.decode("utf-8")
+                    for child in n.children:
+                        res = find_first_identifier(child)
+                        if res:
+                            return res
+                    return None
+                name = find_first_identifier(node)
             if name:
                 all_known_identifiers.add(name)
                 if name == search_name:
@@ -377,7 +361,8 @@ async def get_references(filepath: str, target_symbol: str, workdir: str = None,
         
         is_leaf_symbol = not node.children and node.type in (
             "identifier", "type_identifier", "property_identifier", "field_identifier", 
-            "variable_name", "variable", "name", "class_name", "method_name", "attribute_name"
+            "variable_name", "variable", "name", "class_name", "method_name", "attribute_name",
+            "package_identifier", "shorthand_property_identifier"
         )
         
         if is_leaf_symbol and (text == target_symbol or text_no_sigil == symbol_no_sigil):
@@ -685,13 +670,17 @@ async def batch_ast_query(queries: list[dict], workdir: str = None) -> dict:
     if not isinstance(queries, list):
         return {"success": False, "error": f"The queries parameter must be a list of dictionaries. Failed to parse: {queries}"}
 
+    from agent_engine.tools.ast_grep import ast_grep_run
+
     results = []
     actions_map = {
         "get_document_map": get_document_map,
         "get_entity_coordinates": get_entity_coordinates,
         "get_references": get_references,
         "get_html_attribute_bytes": get_html_attribute_bytes,
-        "verify_ast_integrity": verify_ast_integrity
+        "verify_ast_integrity": verify_ast_integrity,
+        "rename_symbol": rename_symbol,
+        "ast_grep_run": ast_grep_run
     }
 
     for idx, q in enumerate(queries):
@@ -722,3 +711,57 @@ async def batch_ast_query(queries: list[dict], workdir: str = None) -> dict:
             results.append({"success": False, "error": f"Error executing '{action}': {str(e)}"})
 
     return {"results": results}
+
+
+async def rename_symbol(filepath: str, old_name: str, new_name: str, workdir: str = None) -> dict:
+    """
+    Atomically renames all occurrences of a symbol in a single file using host-side AST reference discovery.
+    
+    This tool combines get_references + patch_code_range into a single atomic operation,
+    eliminating manual coordinate transcription errors entirely.
+    
+    Args:
+        filepath: The target source file.
+        old_name: The current symbol name to rename (variable, function, class, etc.).
+        new_name: The new symbol name.
+        workdir: Optional working directory context.
+        
+    Returns:
+        Summary of how many occurrences were renamed, or an error message.
+    """
+    # Step 1: Discover all references using the AST engine
+    refs_result = await get_references(filepath, old_name, workdir=workdir, include_context=False)
+    
+    if "error" in refs_result:
+        return refs_result
+    
+    references = refs_result.get("references", [])
+    if not references:
+        return {"success": False, "error": f"Symbol '{old_name}' not found in '{filepath}'. No references to rename."}
+    
+    # Step 2: Build patches from references (bottom-up sorting handled by patch_code_range)
+    from .file_ops import patch_code_range
+    
+    patches = []
+    for ref in references:
+        patches.append({
+            "start_byte": ref["start_byte"],
+            "end_byte": ref["end_byte"],
+            "replacement": new_name,
+            "original_text": old_name
+        })
+    
+    # Step 3: Apply atomically via patch_code_range
+    resolved_filepath = filepath
+    if workdir and not os.path.isabs(filepath):
+        resolved_filepath = filepath  # patch_code_range resolves relative to workdir
+    
+    result = await patch_code_range(workdir, resolved_filepath, patches=patches)
+    
+    return {
+        "success": not result.startswith("Error"),
+        "renamed_count": len(patches),
+        "old_name": old_name,
+        "new_name": new_name,
+        "message": result
+    }

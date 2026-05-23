@@ -16,10 +16,7 @@ public class DiscountCalculator
         {
             return amount * 0.15;
         }
-        else
-        {
-            return amount * 0.05;
-        }
+        return amount * 0.05;
     }
 }
 

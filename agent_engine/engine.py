@@ -3,6 +3,7 @@ import functools
 import json
 import os
 import re
+from collections import deque
 from collections.abc import AsyncGenerator, Callable
 
 from openai import NOT_GIVEN, AsyncOpenAI
@@ -34,6 +35,7 @@ from agent_engine.tools import (
     web_fetch,
     web_search,
     ast_ops,
+    ast_grep,
 )
 
 _THINK_TAG_PATTERN = re.compile(r"<think>(.*?)</think>", re.DOTALL)
@@ -42,7 +44,8 @@ _BUILTIN_TOOL_NAMES = frozenset((
     "glob_search", "grep_search", "web_fetch", "web_search", "ask_user", "python_repl",
     "sleep", "get_time", "manage_tasks", "subagent", "notebook_edit", "git_tool",
     "manage_todo", "cron_tool", "skill_tool", "code_analysis", "system_info", "network_tool",
-    "get_document_map", "get_entity_coordinates", "get_references", "get_html_attribute_bytes", "verify_ast_integrity"
+    "get_document_map", "get_entity_coordinates", "get_references", "get_html_attribute_bytes", "verify_ast_integrity",
+    "rename_symbol", "ast_grep_run"
 ))
 
 
@@ -63,8 +66,12 @@ class LightweightEngine:
         max_retries: int = 3,
         max_reasoning_tokens: int = 8192,
         debug: bool | None = None,
+        adaptive_tools: bool = True,
+        compile_check: bool = True,
     ) -> None:
         self.model = model or os.getenv("AGENT_MODEL", "gpt-4o")
+        self.adaptive_tools = adaptive_tools
+        self.compile_check = compile_check
         self.manage_history = manage_history
         self.history = []
         self.max_history_length = max_history_length
@@ -176,6 +183,8 @@ class LightweightEngine:
                 "get_html_attribute_bytes": bind_workdir(ast_ops.get_html_attribute_bytes),
                 "verify_ast_integrity": bind_workdir(ast_ops.verify_ast_integrity),
                 "batch_ast_query": bind_workdir(ast_ops.batch_ast_query),
+                "rename_symbol": bind_workdir(ast_ops.rename_symbol),
+                "ast_grep_run": bind_workdir(ast_grep.ast_grep_run),
             }
             known_dynamic_mcp_tools = {"get_ast", "run_query", "get_symbols", "find_text"}
             for tool_name in allowed_tools:
@@ -186,6 +195,46 @@ class LightweightEngine:
                     pass
                 else:
                     raise ValueError(f"Unknown built-in tool: {tool_name}")
+
+    def _get_adapted_tools(self, iteration: int) -> list[str] | None:
+        if not self.allowed_tools:
+            return None
+            
+        discovery_subset = {
+            "get_document_map", "get_entity_coordinates", "get_references", 
+            "get_html_attribute_bytes", "verify_ast_integrity", "ast_grep_run", 
+            "grep_search", "glob_search", "read_file", "web_search", "system_info", 
+            "code_analysis"
+        }
+        write_edit_subset = {
+            "file_write", "file_edit", "patch_code_range", "bash", 
+            "rename_symbol", "python_repl", "web_fetch", "git_tool", "network_tool",
+            "read_file", "sleep", "get_time"
+        }
+        
+        # Keep common utility tools in both phases
+        utility_subset = {
+            "ask_user", "sleep", "get_time", "manage_tasks", "subagent", 
+            "notebook_edit", "manage_todo", "cron_tool", "skill_tool"
+        }
+        
+        adapted = []
+        if iteration == 1:
+            # Phase 1: Discovery phase
+            for t in self.allowed_tools:
+                if t in discovery_subset or t in utility_subset:
+                    adapted.append(t)
+            if not adapted:
+                adapted = self.allowed_tools
+        else:
+            # Phase 2: Action / Edit phase
+            for t in self.allowed_tools:
+                if t in write_edit_subset or t in utility_subset:
+                    adapted.append(t)
+            if not adapted:
+                adapted = self.allowed_tools
+                
+        return adapted
 
     def _prune_obsolete_ast_history(self, working_messages: list[dict]) -> None:
         """Prune tool responses for coordinates and references after a successful patch, since they are now obsolete."""
@@ -627,6 +676,24 @@ class LightweightEngine:
         try:
             result = await asyncio.wait_for(self.tools.dispatch(name, args), timeout=timeout)
             result_str = str(result)
+            
+            # Post-write compilation and syntax checks for Python files
+            if self.compile_check and name in {"file_write", "file_edit", "patch_code_range"}:
+                filepath = args.get("filepath") or args.get("TargetFile") or args.get("target_file")
+                if filepath and isinstance(filepath, str) and filepath.endswith(".py"):
+                    full_path = os.path.join(self.workdir, filepath) if not os.path.isabs(filepath) else filepath
+                    if os.path.exists(full_path):
+                        import sys, subprocess
+                        proc = await asyncio.to_thread(
+                            subprocess.run,
+                            [sys.executable, "-m", "py_compile", full_path],
+                            capture_output=True,
+                            text=True
+                        )
+                        if proc.returncode != 0:
+                            err_msg = f"\n\n[LINT WARNING] SyntaxError detected in {filepath} post-edit:\n{proc.stderr.strip()}\nPlease review the traceback and edit the file immediately to correct the error."
+                            result_str += err_msg
+
             cap = 100_000 if name in _VERBOSE_TOOLS else _HISTORY_CAP
             if len(result_str) > cap:
                 is_truncated = True
@@ -680,9 +747,6 @@ class LightweightEngine:
                 working_messages.insert(0, {"role": system_role, "content": effective_prompt})
 
         working_messages.append({"role": "user", "content": prompt})
-        schemas = self.tools.get_all_schemas(self.allowed_tools)
-        tools_param = schemas if schemas else NOT_GIVEN
-
         run_usage = None
         iteration = 0
         while self._is_running:
@@ -697,6 +761,14 @@ class LightweightEngine:
             self._broadcast(ev)
             yield ev
 
+            if self.adaptive_tools:
+                adapted = self._get_adapted_tools(iteration)
+                schemas = self.tools.get_all_schemas(adapted)
+                tools_param = schemas if schemas else NOT_GIVEN
+            else:
+                schemas = self.tools.get_all_schemas(self.allowed_tools)
+                tools_param = schemas if schemas else NOT_GIVEN
+
             # Compress historical messages (older than the last 4 messages) to prevent token window bloat and amnesia
             compressed_messages = []
             for i, msg in enumerate(working_messages):
@@ -704,8 +776,8 @@ class LightweightEngine:
                     compressed_messages.append(msg)
                 else:
                     content = msg.get("content")
-                    if isinstance(content, str) and len(content) > 1500:
-                        trimmed = content[:1500] + f"\n... [Truncated for Context Window Efficiency. Original size: {len(content)} characters]"
+                    if isinstance(content, str) and len(content) > 150000:
+                        trimmed = content[:150000] + f"\n... [Truncated for Context Window Efficiency. Original size: {len(content)} characters]"
                         compressed_messages.append({**msg, "content": trimmed})
                     else:
                         compressed_messages.append(msg)
@@ -770,6 +842,7 @@ class LightweightEngine:
 
             stream_buffer = ""
             local_reasoning_chars = 0
+            _repetition_window: deque[str] = deque(maxlen=12)
             async for chunk in stream:
                 if not self._is_running:
                     break
@@ -841,6 +914,19 @@ class LightweightEngine:
                                     self._broadcast(ev, should_log=False)
                                     yield ev
                                     stream_buffer = stream_buffer[-12:]
+                                    
+                                    # Repetition Loop Breaker: detect degenerate attention loops
+                                    _chunk_key = to_yield.strip()[:80]
+                                    if _chunk_key:
+                                        _repetition_window.append(_chunk_key)
+                                        if len(_repetition_window) == _repetition_window.maxlen:
+                                            _unique_ratio = len(set(_repetition_window)) / len(_repetition_window)
+                                            if _unique_ratio < 0.3:
+                                                ev = AgentEvent(type="system", data="[GUARD] Repetition loop detected — force-stopping degenerate generation to save tokens.")
+                                                self._broadcast(ev)
+                                                yield ev
+                                                self._is_running = False
+                                                break
                                 break
                         else:
                             # Currently in a thinking block, look for any end tag
@@ -1032,7 +1118,8 @@ class LightweightEngine:
                         known_file_tools = (
                             "read_file", "file_write", "file_edit", "file_delete", "patch_code_range",
                             "get_document_map", "get_entity_coordinates", "get_references",
-                            "get_html_attribute_bytes", "verify_ast_integrity", "batch_ast_query"
+                            "get_html_attribute_bytes", "verify_ast_integrity", "batch_ast_query",
+                            "rename_symbol", "ast_grep_run"
                         )
                         if tool_name not in known_file_tools:
                             if tool_name != "bash":

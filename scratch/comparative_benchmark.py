@@ -244,7 +244,7 @@ async def run_phase_ast(phase_num: int, phase_name: str, prompt: str) -> dict:
     _section(f"AST PIPELINE - PHASE {phase_num}: {phase_name}")
     engine = LightweightEngine(
         workdir="challenge_workspace",
-        allowed_tools=["bash", "patch_code_range", "read_file", "get_document_map", "get_entity_coordinates", "get_references", "get_html_attribute_bytes", "verify_ast_integrity", "batch_ast_query"],
+        allowed_tools=["bash", "patch_code_range", "read_file", "get_document_map", "get_entity_coordinates", "get_references", "get_html_attribute_bytes", "verify_ast_integrity", "batch_ast_query", "rename_symbol", "ast_grep_run", "grep_search"],
         max_iterations=15,
         extra_completion_kwargs={
             "extra_body": {

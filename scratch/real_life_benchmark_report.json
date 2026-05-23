@@ -1,0 +1,47 @@
+{
+    "timestamp": 1779550432.129626,
+    "ast": {
+        "total_passed": 10,
+        "individual_results": {
+            "test_db_initialization": "PASSED",
+            "test_db_crud_operations": "PASSED",
+            "test_rate_limiter_limit": "PASSED",
+            "test_rate_limiter_refill": "PASSED",
+            "test_rate_limiter_isolation": "PASSED",
+            "test_rate_limiter_capacity_cap": "PASSED",
+            "test_order_placement_success": "PASSED",
+            "test_order_placement_insufficient_balance": "PASSED",
+            "test_order_placement_out_of_stock": "PASSED",
+            "test_order_placement_db_error_rollback": "PASSED"
+        },
+        "metrics": {
+            "duration": 169.91480088233948,
+            "prompt_tokens": 92665,
+            "completion_tokens": 6009,
+            "reasoning_tokens": 1211,
+            "total_tokens": 98674
+        }
+    },
+    "basic": {
+        "total_passed": 10,
+        "individual_results": {
+            "test_db_initialization": "PASSED",
+            "test_db_crud_operations": "PASSED",
+            "test_rate_limiter_limit": "PASSED",
+            "test_rate_limiter_refill": "PASSED",
+            "test_rate_limiter_isolation": "PASSED",
+            "test_rate_limiter_capacity_cap": "PASSED",
+            "test_order_placement_success": "PASSED",
+            "test_order_placement_insufficient_balance": "PASSED",
+            "test_order_placement_out_of_stock": "PASSED",
+            "test_order_placement_db_error_rollback": "PASSED"
+        },
+        "metrics": {
+            "duration": 251.6422734260559,
+            "prompt_tokens": 114731,
+            "completion_tokens": 9005,
+            "reasoning_tokens": 3392,
+            "total_tokens": 123736
+        }
+    }
+}

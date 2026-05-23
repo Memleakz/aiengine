@@ -176,6 +176,40 @@ async def test_batch_ast_query(temp_python_file):
     assert res["results"][2]["result"]["syntax_valid"] is True
 
 
+async def test_batch_ast_query_extended(temp_python_file):
+    from unittest.mock import patch, MagicMock
+    
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = MagicMock()
+    
+    async def mock_communicate():
+        return b'[{"text": "class UserService:", "range": {"byteOffset": {"start": 0, "end": 18}}}]', b""
+    mock_proc.communicate.side_effect = mock_communicate
+
+    queries = [
+        {"action": "ast_grep_run", "params": {"filepath_glob": os.path.basename(temp_python_file), "action": "search", "pattern": "class $SERVICE:"}},
+        {"action": "rename_symbol", "params": {"filepath": temp_python_file, "old_name": "UserService", "new_name": "UserSvc"}}
+    ]
+    workdir = os.path.dirname(temp_python_file)
+    
+    with patch("shutil.which", return_value="/usr/local/bin/ast-grep"), \
+         patch("asyncio.create_subprocess_exec", return_value=mock_proc), \
+         patch("os.path.exists", return_value=True):
+        res = await batch_ast_query(queries, workdir=workdir)
+        
+    assert "results" in res
+    assert len(res["results"]) == 2
+    assert res["results"][0]["success"] is True
+    assert res["results"][0]["result"]["success"] is True
+    assert res["results"][0]["result"]["count"] > 0
+    assert res["results"][1]["success"] is True
+    assert res["results"][1]["result"]["success"] is True
+    assert res["results"][1]["result"]["renamed_count"] > 0
+
+
+
+
 async def test_html_multi_and_element_coordinates():
     html_content = """<!DOCTYPE html>
 <html>

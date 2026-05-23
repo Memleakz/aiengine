@@ -6,10 +6,11 @@ _MAX_FILE_BYTES = 10 * 1024 * 1024
 
 def _is_safe_path(workdir: str, filepath: str) -> bool:
     try:
-        w_dir = Path(workdir).resolve()
-        target = Path(os.path.join(workdir, filepath)).resolve()
+        w_dir_str = workdir if workdir is not None else os.getcwd()
+        w_dir = Path(w_dir_str).resolve()
+        target = Path(os.path.join(w_dir_str, filepath)).resolve()
         return w_dir == target or target.is_relative_to(w_dir)
-    except (ValueError, OSError):
+    except (ValueError, OSError, TypeError):
         return False
 
 def _read_lines_sync(filepath: str) -> list[str]:
@@ -46,7 +47,7 @@ async def read_file(workdir: str, filepath: str, start_line: int = 1, end_line: 
         )
         start = max(0, start_line - 1)
         end = len(lines) if end_line == -1 else end_line
-        return "".join(lines[start:end]) + _source_warning
+        return "".join(lines[start:end])
     except FileNotFoundError:
         return f"Error: file not found: {filepath}"
     except Exception as exc:
@@ -84,6 +85,16 @@ async def file_edit(workdir: str, filepath: str, old_string: str, new_string: st
         if old_string not in content:
             return f"Error: '{old_string}' not found in {filepath}."
 
+        # Snapshot original syntax validity before editing
+        orig_valid = True
+        try:
+            from .ast_ops import verify_ast_integrity
+            ast_res = await verify_ast_integrity(target)
+            orig_valid = ast_res.get("syntax_valid", True)
+        except Exception:
+            pass
+
+        original_content = content
         if replace_all:
             content = content.replace(old_string, new_string)
         else:
@@ -91,6 +102,22 @@ async def file_edit(workdir: str, filepath: str, old_string: str, new_string: st
 
         with open(target, "w", encoding="utf-8") as f:
             f.write(content)
+
+        # AST Safety: verify the edit did not introduce a syntax error
+        try:
+            from .ast_ops import verify_ast_integrity, TreeCache
+            ast_res = await verify_ast_integrity(target)
+            if orig_valid and not ast_res.get("syntax_valid", True):
+                # Rollback! Restore original content to prevent corruption.
+                with open(target, "w", encoding="utf-8") as f_rollback:
+                    f_rollback.write(original_content)
+                TreeCache.get_tree(target, force_reload=True)
+                errors = ast_res.get("errors", [])
+                err_msg = errors[0]['near_text'] if errors else "unknown context"
+                return f"Error: Edit rejected! Replacing '{old_string}' introduces a syntax error near '{err_msg}'. Rolled back to preserve code integrity."
+        except Exception:
+            pass
+
         return f"Successfully edited {filepath}."
     except Exception as exc:
         return f"Error: {exc}"
@@ -159,6 +186,8 @@ async def patch_code_range(workdir: str, filepath: str, start_byte: int = None, 
                 p_start = patch.get("start_byte")
                 p_end = patch.get("end_byte")
                 p_repl = patch.get("replacement")
+                if p_repl is None and "text" in patch:
+                    p_repl = patch.get("text")
                 p_orig = patch.get("original_text")
                 res = await patch_code_range(
                     workdir=workdir,
