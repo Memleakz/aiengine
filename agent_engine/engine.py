@@ -36,6 +36,7 @@ from agent_engine.tools import (
     web_search,
     ast_ops,
     ast_grep,
+    get_tool_guide,
 )
 
 _THINK_TAG_PATTERN = re.compile(r"<think>(.*?)</think>", re.DOTALL)
@@ -66,12 +67,8 @@ class LightweightEngine:
         max_retries: int = 3,
         max_reasoning_tokens: int = 8192,
         debug: bool | None = None,
-        adaptive_tools: bool = True,
-        compile_check: bool = True,
     ) -> None:
         self.model = model or os.getenv("AGENT_MODEL", "gpt-4o")
-        self.adaptive_tools = adaptive_tools
-        self.compile_check = compile_check
         self.manage_history = manage_history
         self.history = []
         self.max_history_length = max_history_length
@@ -139,10 +136,21 @@ class LightweightEngine:
         )
 
         self.tools = ToolRegistry()
-        self.allowed_tools = allowed_tools
+        self.allowed_tools = list(allowed_tools) if allowed_tools is not None else []
         self._mcp_managers: list[MCPServerManager] = []
 
-        if allowed_tools:
+        if self.allowed_tools:
+            # Auto-inject the tool utility managers
+            for t in ["list_available_tools", "enable_tools", "disable_tools"]:
+                if t not in self.allowed_tools:
+                    self.allowed_tools.append(t)
+            
+            # Setup active tools list (bootstrap core set)
+            core_set = ["list_available_tools", "enable_tools", "disable_tools", "read_file", "grep_search", "bash", "ask_user"]
+            self.active_tools = [t for t in core_set if t in self.allowed_tools]
+            if not self.active_tools:
+                self.active_tools = self.allowed_tools.copy()
+
             self.bash_tool_instance = bash_tool.BashTool(workdir=self.workdir)
             def bind_workdir(fn: Callable) -> Callable:
                 @functools.wraps(fn)
@@ -185,9 +193,13 @@ class LightweightEngine:
                 "batch_ast_query": bind_workdir(ast_ops.batch_ast_query),
                 "rename_symbol": bind_workdir(ast_ops.rename_symbol),
                 "ast_grep_run": bind_workdir(ast_grep.ast_grep_run),
+                "get_tool_guide": bind_workdir(get_tool_guide),
+                "list_available_tools": self.list_available_tools,
+                "enable_tools": self.enable_tools,
+                "disable_tools": self.disable_tools,
             }
             known_dynamic_mcp_tools = {"get_ast", "run_query", "get_symbols", "find_text"}
-            for tool_name in allowed_tools:
+            for tool_name in self.allowed_tools:
                 if tool_name in tool_method_map:
                     self.tools.register(tool_method_map[tool_name])
                 elif tool_name in known_dynamic_mcp_tools:
@@ -196,45 +208,62 @@ class LightweightEngine:
                 else:
                     raise ValueError(f"Unknown built-in tool: {tool_name}")
 
-    def _get_adapted_tools(self, iteration: int) -> list[str] | None:
-        if not self.allowed_tools:
-            return None
+    async def list_available_tools(self) -> str:
+        """List all registered tools that are currently inactive and can be enabled."""
+        inactive = [t for t in self.allowed_tools if t not in self.active_tools]
+        if not inactive:
+            return "All available tools are currently active."
+        
+        lines = []
+        for name in inactive:
+            entry = self.tools._tools.get(name)
+            if entry:
+                desc = entry["schema"]["function"].get("description", "No description available.")
+                lines.append(f"- `{name}`: {desc}")
+        
+        return "Inactive tools you can enable:\n" + "\n".join(lines)
+
+    async def enable_tools(self, tool_names: list[str]) -> str:
+        """Enable one or more registered tools to make them available in the next turn."""
+        enabled = []
+        failed = []
+        for name in tool_names:
+            if name in self.allowed_tools:
+                if name not in self.active_tools:
+                    self.active_tools.append(name)
+                enabled.append(name)
+            else:
+                failed.append(name)
+        
+        msg = []
+        if enabled:
+            msg.append(f"Successfully enabled tools: {', '.join(enabled)}.")
+        if failed:
+            msg.append(f"Could not enable unregistered tools: {', '.join(failed)}.")
             
-        discovery_subset = {
-            "get_document_map", "get_entity_coordinates", "get_references", 
-            "get_html_attribute_bytes", "verify_ast_integrity", "ast_grep_run", 
-            "grep_search", "glob_search", "read_file", "web_search", "system_info", 
-            "code_analysis"
-        }
-        write_edit_subset = {
-            "file_write", "file_edit", "patch_code_range", "bash", 
-            "rename_symbol", "python_repl", "web_fetch", "git_tool", "network_tool",
-            "read_file", "sleep", "get_time"
-        }
-        
-        # Keep common utility tools in both phases
-        utility_subset = {
-            "ask_user", "sleep", "get_time", "manage_tasks", "subagent", 
-            "notebook_edit", "manage_todo", "cron_tool", "skill_tool"
-        }
-        
-        adapted = []
-        if iteration == 1:
-            # Phase 1: Discovery phase
-            for t in self.allowed_tools:
-                if t in discovery_subset or t in utility_subset:
-                    adapted.append(t)
-            if not adapted:
-                adapted = self.allowed_tools
-        else:
-            # Phase 2: Action / Edit phase
-            for t in self.allowed_tools:
-                if t in write_edit_subset or t in utility_subset:
-                    adapted.append(t)
-            if not adapted:
-                adapted = self.allowed_tools
+        return " ".join(msg) + " They will be available in your toolset in the next turn."
+
+    async def disable_tools(self, tool_names: list[str]) -> str:
+        """Disable one or more active tools to reduce token footprint and clutter."""
+        disabled = []
+        failed = []
+        protected = {"list_available_tools", "enable_tools", "disable_tools"}
+        for name in tool_names:
+            if name in protected:
+                failed.append(f"{name} (protected)")
+            elif name in self.active_tools:
+                self.active_tools.remove(name)
+                disabled.append(name)
+            else:
+                failed.append(name)
                 
-        return adapted
+        msg = []
+        if disabled:
+            msg.append(f"Successfully disabled tools: {', '.join(disabled)}.")
+        if failed:
+            msg.append(f"Could not disable: {', '.join(failed)}.")
+            
+        return " ".join(msg)
 
     def _prune_obsolete_ast_history(self, working_messages: list[dict]) -> None:
         """Prune tool responses for coordinates and references after a successful patch, since they are now obsolete."""
@@ -243,7 +272,9 @@ class LightweightEngine:
             "get_entity_coordinates", 
             "get_html_attribute_bytes", 
             "batch_ast_query", 
-            "get_document_map"
+            "get_document_map",
+            "get_tool_guide",
+            "list_available_tools"
         }
         
         # Build map from tool call ID to the tool name that was called
@@ -263,7 +294,12 @@ class LightweightEngine:
                 call_id = msg.get("tool_call_id")
                 tool_name = tool_call_to_name.get(call_id)
                 if tool_name in obsolete_tools:
-                    msg["content"] = f"[Obsolete AST coordinates for '{tool_name}' cleared after successful patch]"
+                    if tool_name == "get_tool_guide":
+                        msg["content"] = "[Tool guide reference cleared from history after successful action]"
+                    elif tool_name == "list_available_tools":
+                        msg["content"] = "[Available tools list cleared from history after successful action]"
+                    else:
+                        msg["content"] = f"[Obsolete AST coordinates for '{tool_name}' cleared after successful patch]"
 
     def subscribe(self, queue: asyncio.Queue[AgentEvent] = None) -> asyncio.Queue[AgentEvent]:
         """Subscribe to engine events. Returns a queue that will receive all yielded AgentEvents."""
@@ -676,23 +712,6 @@ class LightweightEngine:
         try:
             result = await asyncio.wait_for(self.tools.dispatch(name, args), timeout=timeout)
             result_str = str(result)
-            
-            # Post-write compilation and syntax checks for Python files
-            if self.compile_check and name in {"file_write", "file_edit", "patch_code_range"}:
-                filepath = args.get("filepath") or args.get("TargetFile") or args.get("target_file")
-                if filepath and isinstance(filepath, str) and filepath.endswith(".py"):
-                    full_path = os.path.join(self.workdir, filepath) if not os.path.isabs(filepath) else filepath
-                    if os.path.exists(full_path):
-                        import sys, subprocess
-                        proc = await asyncio.to_thread(
-                            subprocess.run,
-                            [sys.executable, "-m", "py_compile", full_path],
-                            capture_output=True,
-                            text=True
-                        )
-                        if proc.returncode != 0:
-                            err_msg = f"\n\n[LINT WARNING] SyntaxError detected in {filepath} post-edit:\n{proc.stderr.strip()}\nPlease review the traceback and edit the file immediately to correct the error."
-                            result_str += err_msg
 
             cap = 100_000 if name in _VERBOSE_TOOLS else _HISTORY_CAP
             if len(result_str) > cap:
@@ -711,6 +730,31 @@ class LightweightEngine:
         history: list = None,
     ) -> AsyncGenerator[AgentEvent, None]:
         self._is_running = True
+
+        # Smart Prompt Bootstrapper: Pre-load active tools based on keywords in prompt
+        prompt_lower = prompt.lower()
+        if hasattr(self, "active_tools") and hasattr(self, "allowed_tools"):
+            # 1. Edit / Write domain
+            if any(w in prompt_lower for w in ["write", "change", "edit", "patch", "replace", "fix", "create", "delete", "remove"]):
+                for t in ["file_write", "file_edit", "patch_code_range", "file_delete"]:
+                    if t in self.allowed_tools and t not in self.active_tools:
+                        self.active_tools.append(t)
+            # 2. Search / Discovery domain
+            if any(w in prompt_lower for w in ["find", "search", "grep", "where is", "glob", "locate", "list"]):
+                for t in ["glob_search", "grep_search"]:
+                    if t in self.allowed_tools and t not in self.active_tools:
+                        self.active_tools.append(t)
+            # 3. Code Intelligence (AST) domain
+            if any(w in prompt_lower for w in ["ast", "class", "function", "references", "import", "coordinates", "rename", "symbol"]):
+                for t in ["get_document_map", "get_entity_coordinates", "get_references", "rename_symbol"]:
+                    if t in self.allowed_tools and t not in self.active_tools:
+                        self.active_tools.append(t)
+            # 4. Web domain
+            if any(w in prompt_lower for w in ["web", "fetch", "url", "internet", "search internet", "download", "http"]):
+                for t in ["web_fetch", "web_search"]:
+                    if t in self.allowed_tools and t not in self.active_tools:
+                        self.active_tools.append(t)
+
         if self.manage_history:
             if history is not None:
                 self.history = history  # work with caller's list directly
@@ -747,6 +791,7 @@ class LightweightEngine:
                 working_messages.insert(0, {"role": system_role, "content": effective_prompt})
 
         working_messages.append({"role": "user", "content": prompt})
+
         run_usage = None
         iteration = 0
         while self._is_running:
@@ -761,13 +806,9 @@ class LightweightEngine:
             self._broadcast(ev)
             yield ev
 
-            if self.adaptive_tools:
-                adapted = self._get_adapted_tools(iteration)
-                schemas = self.tools.get_all_schemas(adapted)
-                tools_param = schemas if schemas else NOT_GIVEN
-            else:
-                schemas = self.tools.get_all_schemas(self.allowed_tools)
-                tools_param = schemas if schemas else NOT_GIVEN
+            # Calculate dynamic tool schemas based on current active_tools
+            schemas = self.tools.get_all_schemas(self.active_tools)
+            tools_param = schemas if schemas else NOT_GIVEN
 
             # Compress historical messages (older than the last 4 messages) to prevent token window bloat and amnesia
             compressed_messages = []

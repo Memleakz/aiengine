@@ -457,3 +457,147 @@ class TestFrontendTypeDefinitions:
         assert "ErrorEvent" in content
         assert "ServerEvent" in content
         assert "ClientEvent" in content
+
+
+class TestGetToolGuideTool:
+    """Test suite for get_tool_guide tool and the engine self-pruning behavior."""
+
+    def test_get_tool_guide_fallback(self):
+        from agent_engine.tools.tool_guide import get_tool_guide
+        # Test default fallback when .agent_skills directory doesn't exist
+        result = asyncio.run(get_tool_guide(workdir="/nonexistent_dir_12345"))
+        assert "Code Intelligence Tool Guide" in result
+        assert "get_document_map" in result
+
+    def test_engine_prunes_get_tool_guide_history(self):
+        from agent_engine.engine import LightweightEngine
+        
+        # Mock engine instance
+        engine = LightweightEngine(
+            allowed_tools=["get_tool_guide"],
+            manage_history=True
+        )
+        
+        # Construct message history mock containing a get_tool_guide tool call and response
+        working_messages = [
+            {"role": "assistant", "tool_calls": [{"id": "call_123", "name": "get_tool_guide"}]},
+            {"role": "tool", "tool_call_id": "call_123", "content": "This is a very long tools guide document details"}
+        ]
+        
+        # Run pruning
+        engine._prune_obsolete_ast_history(working_messages)
+        
+        # Verify the history response is successfully pruned to the placeholder
+        assert working_messages[1]["content"] == "[Tool guide reference cleared from history after successful action]"
+
+
+class TestDynamicToolUtilityBelt:
+    """Test suite for LightweightEngine dynamic utility belt tools (list, enable, disable)."""
+
+    def test_dynamic_tools_bootstrapping(self):
+        from agent_engine.engine import LightweightEngine
+        
+        # Instantiate engine with standard tools list
+        engine = LightweightEngine(
+            allowed_tools=["read_file", "file_edit", "glob_search", "grep_search", "bash", "ask_user"],
+            manage_history=True
+        )
+        
+        # Verify self-bootstrapped list contains tool utility managers
+        assert "list_available_tools" in engine.allowed_tools
+        assert "enable_tools" in engine.allowed_tools
+        assert "disable_tools" in engine.allowed_tools
+        
+        # Verify active tools list (bootstrap core set) has subset of allowed tools
+        assert "read_file" in engine.active_tools
+        assert "grep_search" in engine.active_tools
+        assert "bash" in engine.active_tools
+        assert "file_edit" not in engine.active_tools  # should start inactive
+        
+    def test_list_enable_disable_flow(self):
+        from agent_engine.engine import LightweightEngine
+        
+        engine = LightweightEngine(
+            allowed_tools=["read_file", "file_edit"],
+            manage_history=True
+        )
+        
+        # 1. Test listing available tools
+        list_res = asyncio.run(engine.list_available_tools())
+        assert "file_edit" in list_res
+        
+        # 2. Test enabling a tool
+        enable_res = asyncio.run(engine.enable_tools(["file_edit"]))
+        assert "Successfully enabled tools: file_edit" in enable_res
+        assert "file_edit" in engine.active_tools
+        
+        # 3. Test disabling a tool
+        disable_res = asyncio.run(engine.disable_tools(["file_edit"]))
+        assert "Successfully disabled tools: file_edit" in disable_res
+        assert "file_edit" not in engine.active_tools
+        
+        # 4. Test protected list cannot be disabled
+        protect_res = asyncio.run(engine.disable_tools(["enable_tools"]))
+        assert "Could not disable: enable_tools (protected)" in protect_res
+
+    def test_engine_prunes_list_available_tools_history(self):
+        from agent_engine.engine import LightweightEngine
+        
+        engine = LightweightEngine(
+            allowed_tools=["read_file"],
+            manage_history=True
+        )
+        
+        working_messages = [
+            {"role": "assistant", "tool_calls": [{"id": "call_456", "name": "list_available_tools"}]},
+            {"role": "tool", "tool_call_id": "call_456", "content": "- `file_edit`: Edit code precisely."}
+        ]
+        
+        engine._prune_obsolete_ast_history(working_messages)
+        
+        assert working_messages[1]["content"] == "[Available tools list cleared from history after successful action]"
+
+    def test_smart_bootstrapper_preloads_correct_tools(self):
+        from agent_engine.engine import LightweightEngine
+        
+        engine = LightweightEngine(
+            allowed_tools=["read_file", "file_edit", "glob_search", "web_fetch"],
+            manage_history=True
+        )
+        
+        # Initially, only read_file is active (bootstrap subset)
+        assert "read_file" in engine.active_tools
+        assert "file_edit" not in engine.active_tools
+        assert "glob_search" not in engine.active_tools
+        assert "web_fetch" not in engine.active_tools
+        
+        # Triggering run() with a prompt containing "edit" and "search" keywords should boot-preload them!
+        async def consume_generator(gen):
+            try:
+                async for _ in gen:
+                    pass
+            except Exception:
+                # We expect it might fail or exit because we haven't mocked the API client, but the bootstrapper runs immediately!
+                pass
+
+        # Call run to trigger the bootstrapper
+        generator = engine.run(prompt="Please edit my code after you find where it is located.")
+        
+        # Execute generator just enough to trigger the bootstrapper (which runs synchronously at the start of run)
+        try:
+            # We don't even need to fully run it, just start the generator
+            import inspect
+            if inspect.isasyncgen(generator):
+                # Just starting the async generator triggers the execution until the first yield
+                asyncio.run(consume_generator(generator))
+        except Exception:
+            pass
+            
+        # Verify the smart bootstrapper pre-loaded the correct tools!
+        assert "file_edit" in engine.active_tools
+        assert "glob_search" in engine.active_tools
+        assert "web_fetch" not in engine.active_tools  # should remain inactive
+
+
+
+

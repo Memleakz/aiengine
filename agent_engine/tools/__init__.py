@@ -18,6 +18,7 @@ from .system_info import system_info
 from .todo_tool import manage_todo
 from .web_fetch import web_fetch
 from .web_search import web_search
+from .tool_guide import get_tool_guide
 from .ast_ops import (
     get_document_map,
     get_entity_coordinates,
@@ -33,6 +34,7 @@ __all__ = [
     "file_write",
     "file_edit",
     "patch_code_range",
+    "get_tool_guide",
     "file_delete",
     "directory_create",
     "glob_search",

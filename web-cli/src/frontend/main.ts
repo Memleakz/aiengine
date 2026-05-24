@@ -78,8 +78,6 @@ const settingTemperature = document.getElementById("setting-temperature") as HTM
 const settingTopP = document.getElementById("setting-top-p") as HTMLInputElement;
 const settingMaxTokens = document.getElementById("setting-max-tokens") as HTMLInputElement;
 const settingShowDebug = document.getElementById("setting-show-debug") as HTMLInputElement;
-const settingAdaptiveTools = document.getElementById("setting-adaptive-tools") as HTMLInputElement;
-const settingCompileCheck = document.getElementById("setting-compile-check") as HTMLInputElement;
 
 let showDebug = false;
 
@@ -88,16 +86,6 @@ const savedWorkdir = localStorage.getItem("ai_kanban_workdir");
 if (savedWorkdir) {
   if (settingWorkdir) settingWorkdir.value = savedWorkdir;
   if (currentWorkdirDisplay) currentWorkdirDisplay.textContent = savedWorkdir;
-}
-
-// Load adaptive_tools and compile_check from localStorage
-if (settingAdaptiveTools) {
-  const savedAdaptive = localStorage.getItem("ai_kanban_adaptive_tools");
-  settingAdaptiveTools.checked = savedAdaptive !== "false"; // default to true
-}
-if (settingCompileCheck) {
-  const savedCompile = localStorage.getItem("ai_kanban_compile_check");
-  settingCompileCheck.checked = savedCompile !== "false"; // default to true
 }
 
 // --- Flow Modal Elements ---
@@ -324,14 +312,9 @@ settingsForm.addEventListener("submit", (e) => {
   
   showDebug = settingShowDebug.checked;
 
-  const adaptive = settingAdaptiveTools ? settingAdaptiveTools.checked : true;
-  const compile = settingCompileCheck ? settingCompileCheck.checked : true;
-
   const settings = {
     workdir: settingWorkdir.value || undefined,
     system_prompt: settingSystemPrompt.value || undefined,
-    adaptive_tools: adaptive,
-    compile_check: compile,
     parameters: {
       temperature: parseFloat(settingTemperature.value),
       top_p: parseFloat(settingTopP.value),
@@ -346,9 +329,6 @@ settingsForm.addEventListener("submit", (e) => {
     if (currentWorkdirDisplay) currentWorkdirDisplay.textContent = settings.workdir;
   }
 
-  localStorage.setItem("ai_kanban_adaptive_tools", adaptive.toString());
-  localStorage.setItem("ai_kanban_compile_check", compile.toString());
-
   settingsModal.classList.remove("show");
   // Banner only on manual save
   messageFeed.addSystemBanner(`Settings applied${showDebug ? " (Debug ON)" : ""}.`);
@@ -361,17 +341,10 @@ wsService.onStatusChange((status: ConnectionStatus) => {
   
   if (status === "connected") {
     const workdir = localStorage.getItem("ai_kanban_workdir");
-    const adaptive = localStorage.getItem("ai_kanban_adaptive_tools") !== "false";
-    const compile = localStorage.getItem("ai_kanban_compile_check") !== "false";
-    
-    const initialSettings: any = {};
     if (workdir) {
-      initialSettings.workdir = workdir;
+      // Send settings but the backend response will be handled silently if possible
+      wsService.sendSettings({ workdir });
     }
-    initialSettings.adaptive_tools = adaptive;
-    initialSettings.compile_check = compile;
-    
-    wsService.sendSettings(initialSettings);
   } else if (status === "disconnected") {
     initialSettingsSynced = false;
   }

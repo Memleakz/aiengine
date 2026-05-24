@@ -234,14 +234,14 @@ async def websocket_endpoint(websocket: WebSocket):
             "bash", "read_file", "file_write", "file_edit", "glob_search", "grep_search",
             "web_fetch", "web_search", "python_repl", "sleep", "get_time",
             "manage_tasks", "subagent", "notebook_edit", "git_tool", "manage_todo",
-            "cron_tool", "skill_tool", "code_analysis", "system_info", "network_tool"
+            "cron_tool", "skill_tool", "code_analysis", "system_info", "network_tool",
+            "get_tool_guide"
         ]
 
         engine = LightweightEngine(
             workdir=workdir,
             allowed_tools=allowed_tools,
             manage_history=True,
-            adaptive_tools=True,
             system_prompt="You are a helpful AI coding assistant with access to tools to modify files and run commands. You are operating in the project root."
         )
 
@@ -292,12 +292,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         if "parameters" in settings:
                             engine.update_completion_kwargs(**settings["parameters"])
                             updated.append("parameters")
-                        if "adaptive_tools" in settings:
-                            engine.adaptive_tools = bool(settings["adaptive_tools"])
-                            updated.append("adaptive_tools")
-                        if "compile_check" in settings:
-                            engine.compile_check = bool(settings["compile_check"])
-                            updated.append("compile_check")
                         
                         await websocket.send_text(json.dumps({
                             "event": "settings_updated",
